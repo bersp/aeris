@@ -44,6 +44,18 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS incomes (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                description TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS payments (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 id TEXT NOT NULL,
@@ -131,6 +143,18 @@ def add_expense(payer_id, price, product, consumer_ids, when=None):
     return expense_id
 
 
+def add_income(user_id, amount, description, when=None):
+    when = when or datetime.now()
+    income_id = _new_id(when)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO incomes (id, user_id, amount, description, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (income_id, user_id, amount, description, when.isoformat(timespec="microseconds")),
+        )
+    return income_id
+
+
 def add_payment(payer_id, payee_id, amount):
     when = datetime.now()
     payment_id = _new_id(when)
@@ -143,24 +167,44 @@ def add_payment(payer_id, payee_id, amount):
     return payment_id
 
 
-def remove_expense(user_id, suffix=None):
-    columns = (
-        "SELECT e.seq, e.id, e.price, e.product, e.payer_id, u.name AS payer "
-        "FROM expenses e JOIN users u ON u.user_id = e.payer_id "
-        "WHERE e.payer_id = ? "
-    )
+def remove_operation(user_id, suffix):
+    # Remove the user's expense or income whose id ends with `suffix`. When both
+    # an expense and an income match, the most recent one wins. Returns a dict
+    # tagged with "kind", or None.
+    like = f"%{suffix}"
     with _connect() as conn:
-        if suffix is None:
-            row = conn.execute(
-                columns + "ORDER BY e.seq DESC LIMIT 1", (user_id,)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                columns + "AND e.id LIKE ? ORDER BY e.seq DESC LIMIT 1",
-                (user_id, f"%{suffix}"),
-            ).fetchone()
-        if row is None:
+        expense = conn.execute(
+            "SELECT seq, id, created_at, price, product, payer_id "
+            "FROM expenses WHERE payer_id = ? AND id LIKE ? ORDER BY seq DESC LIMIT 1",
+            (user_id, like),
+        ).fetchone()
+        income = conn.execute(
+            "SELECT seq, id, created_at, amount, description "
+            "FROM incomes WHERE user_id = ? AND id LIKE ? ORDER BY seq DESC LIMIT 1",
+            (user_id, like),
+        ).fetchone()
+
+        candidates = [
+            (kind, row)
+            for kind, row in (("expense", expense), ("income", income))
+            if row is not None
+        ]
+        if not candidates:
             return None
+        kind, row = max(candidates, key=lambda c: c[1]["created_at"])
+
+        if kind == "income":
+            conn.execute("DELETE FROM incomes WHERE seq = ?", (row["seq"],))
+            return {
+                "kind": "income",
+                "id": row["id"],
+                "description": row["description"],
+                "amount": row["amount"],
+            }
+
+        payer = conn.execute(
+            "SELECT name FROM users WHERE user_id = ?", (row["payer_id"],)
+        ).fetchone()["name"]
         consumers = conn.execute(
             "SELECT c.user_id, u.name FROM consumers c JOIN users u ON u.user_id = c.user_id "
             "WHERE c.expense_seq = ?",
@@ -169,11 +213,12 @@ def remove_expense(user_id, suffix=None):
         conn.execute("DELETE FROM consumers WHERE expense_seq = ?", (row["seq"],))
         conn.execute("DELETE FROM expenses WHERE seq = ?", (row["seq"],))
         return {
+            "kind": "expense",
             "id": row["id"],
             "product": row["product"],
             "price": row["price"],
             "payer_id": row["payer_id"],
-            "payer": row["payer"],
+            "payer": payer,
             "consumer_ids": [c["user_id"] for c in consumers],
             "consumers": [c["name"] for c in consumers],
         }
@@ -244,6 +289,48 @@ def recent_operations(user_id, limit=6, since=None):
     if limit is not None:
         operations = operations[-limit:]
     return operations
+
+
+def monthly_expense_summary(user_id, limit=6):
+    # The user's own share (each expense's price split among its consumers) of
+    # this month's expenses, grouped by product and ordered largest first.
+    # Payments are not expenses, so they are excluded.
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT e.product AS product,
+                   SUM(e.price * 1.0 / counts.n) AS total
+            FROM expenses e
+            JOIN consumers c ON c.expense_seq = e.seq
+            JOIN (
+                SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
+            ) counts ON counts.expense_seq = e.seq
+            WHERE c.user_id = ?
+              AND strftime('%Y-%m', e.created_at) = strftime('%Y-%m', 'now', 'localtime')
+            GROUP BY e.product
+            ORDER BY total DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+
+
+def cash_balance(user_id):
+    # Real money the user holds: incomes received, minus expenses they paid in
+    # full, plus payments received from others, minus payments made to others.
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+              (SELECT COALESCE(SUM(amount), 0) FROM incomes  WHERE user_id  = ?)
+            - (SELECT COALESCE(SUM(price),  0) FROM expenses WHERE payer_id = ?)
+            + (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payee_id = ?)
+            - (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payer_id = ?)
+            AS cash
+            """,
+            (user_id, user_id, user_id, user_id),
+        ).fetchone()
+        return row["cash"]
 
 
 def balance(user_id):

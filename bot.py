@@ -110,10 +110,11 @@ async def start(message: Message):
         "/register <name> - register with a name\n"
         "/rename <name> - change your name\n"
         "/add [date] <product> <price> [payer] [beneficiaries] - record an expense\n"
-        "/remove <last|id suffix> - remove an expense\n"
+        "/remove <id suffix> - remove an expense or income\n"
         "/list [n N | m [K] | d [K]] - operations (last 6 by default)\n"
         "/detailedlist [n N | m [K] | d [K]] - operations in detail\n"
-        "/balance - show debts with other users\n"
+        "/income [date] <name> <amount> - record an income\n"
+        "/balance - show debts and money\n"
         "/pay [payer] <payee> <amount> - record a payment",
     )
 
@@ -183,11 +184,17 @@ async def add(message: Message, command: CommandObject):
 
 @dp.message(Command("remove"))
 async def remove(message: Message, command: CommandObject):
-    arg = command.args.strip()
-    suffix = None if arg == "last" else arg
-    removed = db.remove_expense(message.from_user.id, suffix)
+    suffix = command.args.strip()
+    removed = db.remove_operation(message.from_user.id, suffix)
     if removed is None:
         await reply(message, "Nothing to remove.")
+        return
+    if removed["kind"] == "income":
+        await reply(
+            message,
+            f"Removed income {removed['description']} (${format_price(removed['amount'])})\n"
+            f"ID: {removed['id']}",
+        )
         return
     text = operation_message(
         "Removed",
@@ -284,19 +291,57 @@ async def detailed_list(message: Message, command: CommandObject):
     await reply(message, detail)
 
 
+@dp.message(Command("income"))
+async def income(message: Message, command: CommandObject):
+    parts = command.args.split()
+
+    # Optional date as the first argument (today if omitted).
+    when = parse_date(parts[0])
+    if when is not None:
+        parts = parts[1:]
+
+    name = parts[0]
+    if is_number(name):
+        await reply(message, "Name cannot be a number.")
+        return
+    amount = float(parts[1])
+    income_id = db.add_income(message.from_user.id, amount, name, when)
+    await reply(message, f"Income {name} (${format_price(amount)})\nID: {income_id}")
+
+
 @dp.message(Command("balance"))
 async def balance(message: Message):
-    rows = db.balance(message.from_user.id)
-    if not rows:
-        await reply(message, "No debts.")
-        return
-    lines = []
-    for r in rows:
-        if r["net"] > 0:
-            lines.append(f"{r['name']} owes you ${r['net']:.2f}")
-        else:
-            lines.append(f"You owe {r['name']} ${-r['net']:.2f}")
-    await reply(message, "\n".join(lines))
+    user_id = message.from_user.id
+    summary = db.monthly_expense_summary(user_id)
+    rows = db.balance(user_id)
+    cash = db.cash_balance(user_id)
+    net = sum(r["net"] for r in rows)
+
+    # Three sections separated by a blank line. Dynamic text is escaped per
+    # section so the <b>/<code> tags below pass through untouched.
+    sections = []
+
+    if summary:
+        expense_rows = [(s["product"], f"{s['total']:.2f}") for s in summary]
+        table = format_table(("Product", "Total"), expense_rows)
+        sections.append(html.escape(table))
+
+    if rows:
+        debts = []
+        for r in rows:
+            if r["net"] > 0:
+                debts.append(f"{r['name']} owes you ${r['net']:.2f}")
+            else:
+                debts.append(f"You owe {r['name']} ${-r['net']:.2f}")
+        sections.append(html.escape("\n".join(debts)))
+
+    sections.append(
+        f"<b>{html.escape(f'Cash: ${cash:.2f}')}</b>\n"
+        f"<b>{html.escape(f'After debts: ${cash + net:.2f}')}</b>"
+    )
+
+    body = "\n\n".join(sections)
+    await message.answer(f"<code>{body}</code>", parse_mode="HTML")
 
 
 @dp.message(Command("pay"))
