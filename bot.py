@@ -249,6 +249,13 @@ def format_table(header, rows):
     return "\n".join([line(header), separator] + [line(row) for row in rows])
 
 
+def table_block(emoji, label, header, rows):
+    # An emoji-labelled table closed by a rule as wide as the table itself.
+    table = format_table(header, rows)
+    width = max(len(line) for line in table.splitlines())
+    return f"{emoji} {label}\n\n{table}\n{'-' * width}"
+
+
 @dp.message(Command("list"))
 async def list_operations(message: Message, command: CommandObject):
     limit, since, label = parse_list_args(command.args)
@@ -267,8 +274,8 @@ async def list_operations(message: Message, command: CommandObject):
         )
         for op in operations
     ]
-    table = format_table(("Day", "Product", "Price", "Pay", "For"), rows)
-    await reply(message, f"{label}\n{table}")
+    block = table_block("📋", label, ("Day", "Product", "Price", "Pay", "For"), rows)
+    await reply(message, block)
 
 
 @dp.message(Command("detailedlist"))
@@ -327,21 +334,21 @@ async def balance(message: Message, command: CommandObject):
 
     if summary:
         expense_rows = [(s["product"], f"{s['total']:.2f}") for s in summary]
-        table = format_table(("Product", "Total"), expense_rows)
-        sections.append(html.escape(f"{label}\n{table}"))
+        block = table_block("🧾", label, ("Product", "Total"), expense_rows)
+        sections.append(html.escape(block))
 
     if rows:
         debts = []
         for r in rows:
             if r["net"] > 0:
-                debts.append(f"{r['name']} owes you ${r['net']:.2f}")
+                debts.append(f"🤝 {r['name']} owes you ${r['net']:.2f}")
             else:
-                debts.append(f"You owe {r['name']} ${-r['net']:.2f}")
+                debts.append(f"🤝 You owe {r['name']} ${-r['net']:.2f}")
         sections.append(html.escape("\n".join(debts)))
 
     sections.append(
-        f"<b>{html.escape(f'Cash: ${cash:.2f}')}</b>\n"
-        f"<b>{html.escape(f'After debts: ${cash + net:.2f}')}</b>"
+        f"<b>{html.escape(f'💵 Cash: ${cash:.2f}')}</b>\n"
+        f"<b>{html.escape(f'💰 After debts: ${cash + net:.2f}')}</b>"
     )
 
     body = "\n\n".join(sections)
