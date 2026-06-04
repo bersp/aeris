@@ -291,28 +291,31 @@ def recent_operations(user_id, limit=6, since=None):
     return operations
 
 
-def monthly_expense_summary(user_id, limit=6):
-    # The user's own share (each expense's price split among its consumers) of
-    # this month's expenses, grouped by product and ordered largest first.
-    # Payments are not expenses, so they are excluded.
+def expense_summary(user_id, limit=6, since=None):
+    # The user's own share (each expense's price split among its consumers),
+    # grouped by product and ordered largest first. With `since` only expenses
+    # from that datetime on are counted; with `limit` only the top that many
+    # products. Payments are not expenses, so they are excluded.
+    query = """
+        SELECT e.product AS product,
+               SUM(e.price * 1.0 / counts.n) AS total
+        FROM expenses e
+        JOIN consumers c ON c.expense_seq = e.seq
+        JOIN (
+            SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
+        ) counts ON counts.expense_seq = e.seq
+        WHERE c.user_id = ?
+    """
+    params = [user_id]
+    if since is not None:
+        query += " AND e.created_at >= ?"
+        params.append(since.isoformat())
+    query += " GROUP BY e.product ORDER BY total DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
     with _connect() as conn:
-        return conn.execute(
-            """
-            SELECT e.product AS product,
-                   SUM(e.price * 1.0 / counts.n) AS total
-            FROM expenses e
-            JOIN consumers c ON c.expense_seq = e.seq
-            JOIN (
-                SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
-            ) counts ON counts.expense_seq = e.seq
-            WHERE c.user_id = ?
-              AND strftime('%Y-%m', e.created_at) = strftime('%Y-%m', 'now', 'localtime')
-            GROUP BY e.product
-            ORDER BY total DESC
-            LIMIT ?
-            """,
-            (user_id, limit),
-        ).fetchall()
+        return conn.execute(query, params).fetchall()
 
 
 def cash_balance(user_id):

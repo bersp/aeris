@@ -114,7 +114,7 @@ async def start(message: Message):
         "/list [n N | m [K] | d [K]] - operations (last 6 by default)\n"
         "/detailedlist [n N | m [K] | d [K]] - operations in detail\n"
         "/income [date] <name> <amount> - record an income\n"
-        "/balance - show debts and money\n"
+        "/balance [n N | m [K] | d [K]] - show expenses, debts and money\n"
         "/pay [payer] <payee> <amount> - record a payment",
     )
 
@@ -310,9 +310,10 @@ async def income(message: Message, command: CommandObject):
 
 
 @dp.message(Command("balance"))
-async def balance(message: Message):
+async def balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
-    summary = db.monthly_expense_summary(user_id)
+    limit, since = parse_list_args(command.args)
+    summary = db.expense_summary(user_id, limit, since)
     rows = db.balance(user_id)
     cash = db.cash_balance(user_id)
     net = sum(r["net"] for r in rows)
