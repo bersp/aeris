@@ -84,21 +84,24 @@ def _months_ago(months):
     return datetime(year, month + 1, 1)
 
 
-def parse_list_args(args):
-    # Returns (limit, since): how many of the latest operations to show, or a
-    # datetime from which to keep them. Defaults to the last 6.
+def parse_list_args(args, noun="operations", count_word="Last"):
+    # Returns (limit, since, label): how many of the latest operations to show or
+    # a datetime from which to keep them, plus a human label for the window.
+    # `noun`/`count_word` shape the count-mode label (e.g. "Last 6 operations" vs
+    # "Top 6 expenses"). Defaults to the last 6.
     parts = (args or "").split()
-    if not parts:
-        return 6, None
-    mode = parts[0]
-    number = int(parts[1]) if len(parts) > 1 else None
-    if mode == "n":
-        return number or 6, None
-    if mode == "m":
-        return None, _months_ago(number or 1)
-    if mode == "d":
-        return None, _days_ago(number or 1)
-    return 6, None
+    if parts and parts[0] in ("n", "m", "d"):
+        mode = parts[0]
+        number = int(parts[1]) if len(parts) > 1 else None
+        if mode == "n":
+            n = number or 6
+            return n, None, f"{count_word} {n} {noun}"
+        if mode == "m":
+            k = number or 1
+            return None, _months_ago(k), "Last month" if k == 1 else f"Last {k} months"
+        k = number or 1
+        return None, _days_ago(k), "Last day" if k == 1 else f"Last {k} days"
+    return 6, None, f"{count_word} 6 {noun}"
 
 
 @dp.message(Command("start"))
@@ -248,7 +251,7 @@ def format_table(header, rows):
 
 @dp.message(Command("list"))
 async def list_operations(message: Message, command: CommandObject):
-    limit, since = parse_list_args(command.args)
+    limit, since, label = parse_list_args(command.args)
     operations = db.recent_operations(message.from_user.id, limit, since)
     if not operations:
         await reply(message, "No operations.")
@@ -265,12 +268,12 @@ async def list_operations(message: Message, command: CommandObject):
         for op in operations
     ]
     table = format_table(("Day", "Product", "Price", "Pay", "For"), rows)
-    await reply(message, table)
+    await reply(message, f"{label}\n{table}")
 
 
 @dp.message(Command("detailedlist"))
 async def detailed_list(message: Message, command: CommandObject):
-    limit, since = parse_list_args(command.args)
+    limit, since, label = parse_list_args(command.args)
     operations = db.recent_operations(message.from_user.id, limit, since)
     if not operations:
         await reply(message, "No operations.")
@@ -288,7 +291,7 @@ async def detailed_list(message: Message, command: CommandObject):
             f"ID: {op['id']}"
         )
     detail = "\n----\n".join(blocks)
-    await reply(message, detail)
+    await reply(message, f"{label}\n{detail}")
 
 
 @dp.message(Command("income"))
@@ -312,7 +315,7 @@ async def income(message: Message, command: CommandObject):
 @dp.message(Command("balance"))
 async def balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
-    limit, since = parse_list_args(command.args)
+    limit, since, label = parse_list_args(command.args, noun="expenses", count_word="Top")
     summary = db.expense_summary(user_id, limit, since)
     rows = db.balance(user_id)
     cash = db.cash_balance(user_id)
@@ -325,7 +328,7 @@ async def balance(message: Message, command: CommandObject):
     if summary:
         expense_rows = [(s["product"], f"{s['total']:.2f}") for s in summary]
         table = format_table(("Product", "Total"), expense_rows)
-        sections.append(html.escape(table))
+        sections.append(html.escape(f"{label}\n{table}"))
 
     if rows:
         debts = []
