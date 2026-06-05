@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
@@ -151,7 +152,7 @@ async def start(message: Message):
         "Commands:\n"
         "/register <name> - register with a name\n"
         "/rename <name> - change your name\n"
-        "/add [date] <product> <price> [payer] [beneficiaries] - record an expense\n"
+        "/add [date] <product[(description)]> <price> [payer] [beneficiaries] - record an expense\n"
         "/addf [date] <product> <price> [payer] [beneficiaries] - same, forcing the exact product name\n"
         "/remove <id suffix> - remove an expense or income\n"
         "/list [n N | m [K] | d [K]] - operations (last 6 by default)\n"
@@ -190,7 +191,15 @@ async def add_forced(message: Message, command: CommandObject):
 
 
 async def record_expense(message, command, force):
-    parts = command.args.split()
+    args = command.args
+
+    # Optional description in parentheses attached to the product, e.g.
+    # "others(some note)". It may contain spaces, so pull it out before splitting.
+    match = re.search(r"\(([^)]*)\)", args)
+    description = (match.group(1).strip() if match else "") or None
+    if match:
+        args = args[: match.start()] + args[match.end() :]
+    parts = args.split()
 
     # Optional purchase date as the first argument (today if omitted).
     when = parse_date(parts[0])
@@ -220,7 +229,7 @@ async def record_expense(message, command, force):
     # Own expense: paid and consumed by the sender.
     if len(parts) < 4:
         user_id = message.from_user.id
-        expense_id = db.add_expense(user_id, price, product, [user_id], when)
+        expense_id = db.add_expense(user_id, price, product, [user_id], when, description)
         name = db.get_name(user_id)
         await reply(
             message,
@@ -245,7 +254,7 @@ async def record_expense(message, command, force):
 
     consumer_ids = [user_id for user_id, name in beneficiaries]
     consumer_names = [name for user_id, name in beneficiaries]
-    expense_id = db.add_expense(payer_id, price, product, consumer_ids, when)
+    expense_id = db.add_expense(payer_id, price, product, consumer_ids, when, description)
 
     text = operation_message("Added", display_product, price, payer, consumer_names, expense_id)
     recipients = {message.from_user.id, payer_id} | set(consumer_ids)
@@ -282,8 +291,13 @@ def format_price(price):
     return f"{price:.2f}".rstrip("0").rstrip(".")
 
 
-def short_product(product):
-    return product if len(product) <= 7 else product[:5] + ".."
+def short_product(product, has_description=False):
+    # Products with a description carry a trailing "+". The whole cell is kept to
+    # 7 characters: e.g. "Supermarket" -> "Super..", "Supermarket+" -> "Supe..+".
+    suffix = "+" if has_description else ""
+    if len(product) + len(suffix) <= 7:
+        return product + suffix
+    return product[: 7 - 2 - len(suffix)] + ".." + suffix
 
 
 def operation_message(verb, product, price, payer_name, consumer_names, op_id):
@@ -338,7 +352,7 @@ async def list_operations(message: Message, command: CommandObject):
     rows = [
         (
             op["created_at"][8:10],
-            short_product(op["product"]),
+            short_product(op["product"], bool(op["description"])),
             f"{op['price']:.0f}",
             op["buyer"][:2],
             consumer_cell(op["consumers"], total_users),
@@ -360,14 +374,16 @@ async def detailed_list(message: Message, command: CommandObject):
     for op in operations:
         created_at = op["created_at"]
         day = f"{created_at[8:10]}/{created_at[5:7]}/{created_at[2:4]}"
-        blocks.append(
-            f"Day: {day}\n"
-            f"Product: {op['product']}\n"
-            f"Price: {op['price']:.2f}\n"
-            f"Pay: {op['buyer']}\n"
-            f"For: {', '.join(op['consumers'])}\n"
-            f"ID: {op['id']}"
-        )
+        lines = [f"Day: {day}", f"Product: {op['product']}"]
+        if op["description"]:
+            lines.append(f"Description: {op['description']}")
+        lines += [
+            f"Price: {op['price']:.2f}",
+            f"Pay: {op['buyer']}",
+            f"For: {', '.join(op['consumers'])}",
+            f"ID: {op['id']}",
+        ]
+        blocks.append("\n".join(lines))
     detail = "\n----\n".join(blocks)
     await reply(message, f"{label}\n{detail}")
 
@@ -404,7 +420,10 @@ async def balance(message: Message, command: CommandObject):
     sections = []
 
     if summary:
-        expense_rows = [(short_product(s["product"]), f"{s['total']:.2f}") for s in summary]
+        expense_rows = [
+            (short_product(s["product"], bool(s["has_description"])), f"{s['total']:.2f}")
+            for s in summary
+        ]
         block = table_block("🧾", label, ("Product", "Total"), expense_rows)
         sections.append(html.escape(block))
 

@@ -30,6 +30,7 @@ def init_db():
                 payer_id INTEGER NOT NULL,
                 price REAL NOT NULL,
                 product TEXT NOT NULL,
+                description TEXT,
                 created_at TEXT NOT NULL
             )
             """
@@ -127,14 +128,21 @@ def _new_id(when):
     )
 
 
-def add_expense(payer_id, price, product, consumer_ids, when=None):
+def add_expense(payer_id, price, product, consumer_ids, when=None, description=None):
     when = when or datetime.now()
     expense_id = _new_id(when)
     with _connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO expenses (id, payer_id, price, product, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (expense_id, payer_id, price, product, when.isoformat(timespec="microseconds")),
+            "INSERT INTO expenses (id, payer_id, price, product, description, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                expense_id,
+                payer_id,
+                price,
+                product,
+                description,
+                when.isoformat(timespec="microseconds"),
+            ),
         )
         conn.executemany(
             "INSERT INTO consumers (expense_seq, user_id) VALUES (?, ?)",
@@ -267,7 +275,8 @@ def recent_operations(user_id, limit=6, since=None):
     with _connect() as conn:
         expenses = conn.execute(
             """
-            SELECT e.seq, e.id, e.created_at, e.product, e.price, u.name AS buyer
+            SELECT e.seq, e.id, e.created_at, e.product, e.description, e.price,
+                   u.name AS buyer
             FROM expenses e
             JOIN users u ON u.user_id = e.payer_id
             WHERE e.payer_id = ?
@@ -290,6 +299,7 @@ def recent_operations(user_id, limit=6, since=None):
                     "id": expense["id"],
                     "created_at": expense["created_at"],
                     "product": expense["product"],
+                    "description": expense["description"],
                     "price": expense["price"],
                     "buyer": expense["buyer"],
                     "consumers": consumers,
@@ -311,6 +321,7 @@ def recent_operations(user_id, limit=6, since=None):
                     "id": payment["id"],
                     "created_at": payment["created_at"],
                     "product": "pay",
+                    "description": None,
                     "price": payment["amount"],
                     "buyer": payment["buyer"],
                     "consumers": [payment["payee"]],
@@ -333,7 +344,8 @@ def expense_summary(user_id, limit=6, since=None):
     # products. Payments are not expenses, so they are excluded.
     query = """
         SELECT e.product AS product,
-               SUM(e.price * 1.0 / counts.n) AS total
+               SUM(e.price * 1.0 / counts.n) AS total,
+               MAX(e.description IS NOT NULL AND e.description != '') AS has_description
         FROM expenses e
         JOIN consumers c ON c.expense_seq = e.seq
         JOIN (

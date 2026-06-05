@@ -15,6 +15,10 @@ Telegram bot to manage personal expenses.
   `dd/mm` or `dd` (missing parts are taken from today); e.g. `/add 01/06 carne
   800`. Without it, today is used.
 - Products cannot be numbers.
+- A product may carry a description in parentheses, e.g. `/add others(some note)
+  500`. The description can contain spaces and is shown only in `/detailedlist`;
+  in `/list` and `/balance` the product is marked with a trailing `+` instead
+  (e.g. `others+`).
 - A product matching one you already used is standardized to your original
   spelling. This covers both case (after `Pizza`, both `pizza` and `PIZZA` become
   `Pizza`) and a single-letter typo —insertion, deletion or substitution— (e.g.
@@ -39,7 +43,9 @@ Telegram bot to manage personal expenses.
   one field per line (full date, product, price, payer name, consumers and full
   id), separated by `----`
 - In `/list` and `/balance`, product names longer than 7 characters are shown as
-  their first 5 characters plus `..` (e.g. `Supermarket` → `Super..`).
+  their first 5 characters plus `..` (e.g. `Supermarket` → `Super..`); products
+  with a description keep the `+` within the same 7-character width (e.g.
+  `Supermarket+` → `Supe..+`).
 - `/products` — list your products (those you paid for or consumed) with how many
   times each was bought, most-bought first
 - `/balance` — show your net debts with the other users
