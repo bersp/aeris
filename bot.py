@@ -17,7 +17,49 @@ load_dotenv()
 dp = Dispatcher()
 
 # Commands available before registering.
-PUBLIC_COMMANDS = ("/start", "/register")
+PUBLIC_COMMANDS = ("/start", "/help", "/register")
+
+# Command reference shown by /start and /help. Each command and its description
+# go on their own lines, with a blank line between entries, so the message stays
+# readable even when the client wraps long lines.
+HELP_TEXT = (
+    "Aeris\n"
+    "\n"
+    "Commands:\n"
+    "\n"
+    "/register <name>\n"
+    "register or rename yourself\n"
+    "\n"
+    "/add [date] <product[(description)]> <price> [payer] [beneficiaries]\n"
+    "record an expense\n"
+    "\n"
+    "/addf [date] <product> <price> [payer] [beneficiaries]\n"
+    "same as /add, forcing the exact product name\n"
+    "\n"
+    "/remove <id suffix>\n"
+    "remove an expense or income\n"
+    "\n"
+    "/list [n N | m [K] | d [K]]\n"
+    "operations (last 6 by default)\n"
+    "\n"
+    "/detailedlist [n N | m [K] | d [K]]\n"
+    "operations in detail\n"
+    "\n"
+    "/income [date] <name> <amount>\n"
+    "record an income\n"
+    "\n"
+    "/products\n"
+    "list your products with how many times each was bought\n"
+    "\n"
+    "/alias <alias> <product>\n"
+    "define a shortcut for a product\n"
+    "\n"
+    "/balance [n N | m [K] | d [K]]\n"
+    "show expenses, debts and money\n"
+    "\n"
+    "/pay [payer] <payee> <amount>\n"
+    "record a payment"
+)
 
 
 # Every bot reply is sent as monospace so it is visually distinct from user text.
@@ -150,22 +192,12 @@ def parse_list_args(args, noun="operations", count_word="Last"):
 
 @dp.message(Command("start"))
 async def start(message: Message):
-    await reply(
-        message,
-        "Aeris\n\n"
-        "Commands:\n"
-        "/register <name> - register or rename yourself\n"
-        "/add [date] <product[(description)]> <price> [payer] [beneficiaries] - record an expense\n"
-        "/addf [date] <product> <price> [payer] [beneficiaries] - same, forcing the exact product name\n"
-        "/remove <id suffix> - remove an expense or income\n"
-        "/list [n N | m [K] | d [K]] - operations (last 6 by default)\n"
-        "/detailedlist [n N | m [K] | d [K]] - operations in detail\n"
-        "/income [date] <name> <amount> - record an income\n"
-        "/products - list your products with how many times each was bought\n"
-        "/alias <alias> <product> - define a shortcut for a product\n"
-        "/balance [n N | m [K] | d [K]] - show expenses, debts and money\n"
-        "/pay [payer] <payee> <amount> - record a payment",
-    )
+    await reply(message, HELP_TEXT)
+
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    await reply(message, HELP_TEXT)
 
 
 @dp.message(Command("register"))

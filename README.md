@@ -57,12 +57,13 @@ Telegram bot to manage personal expenses.
   debt (a money-only transaction, no product involved). You can also write
   `/pay <payer> <payee> <amount>` so anyone can record a payment between two
   users. Everyone involved is notified.
+- `/help` (or `/start`) — show the list of commands
 
 Each expense and payment gets an automatic id in the form `yymmddss` (date plus
 two random letters).
 
 You must register with `/register` before using any other command (except
-`/start`). Any name referenced in a command (`/add` payer and beneficiaries,
+`/start` and `/help`). Any name referenced in a command (`/add` payer and beneficiaries,
 `/pay` recipient) must also belong to a registered user; otherwise the command
 is rejected.
 
