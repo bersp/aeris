@@ -5,6 +5,9 @@ from datetime import datetime
 
 DB_PATH = "bills.db"
 
+# All money is stored as an integer number of cents to avoid floating-point
+# rounding errors; the bot layer converts to and from a decimal amount.
+
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
@@ -22,14 +25,26 @@ def init_db():
             )
             """
         )
+        # Each user owns their own catalog of products. Aliases (a future feature)
+        # will be a per-user mapping pointing at a product id, which is why expenses
+        # reference products by id rather than by name.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS expenses (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 id TEXT NOT NULL,
                 payer_id INTEGER NOT NULL,
-                price REAL NOT NULL,
-                product TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
                 description TEXT,
                 created_at TEXT NOT NULL
             )
@@ -49,7 +64,7 @@ def init_db():
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 id TEXT NOT NULL,
                 user_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
+                amount INTEGER NOT NULL,
                 description TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
@@ -62,7 +77,7 @@ def init_db():
                 id TEXT NOT NULL,
                 payer_id INTEGER NOT NULL,
                 payee_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
+                amount INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             )
             """
@@ -119,53 +134,32 @@ def count_users():
         return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
 
 
-# --- operations ---
+# --- products ---
 
 
-def _new_id(when):
-    return when.strftime("%y%m%d") + "".join(
-        random.choices(string.ascii_lowercase, k=2)
-    )
-
-
-def add_expense(payer_id, price, product, consumer_ids, when=None, description=None):
-    when = when or datetime.now()
-    expense_id = _new_id(when)
+def get_or_create_product(user_id, name):
+    # The id of the user's product with this exact name, creating it if needed.
+    # Name resolution (case, typos, future aliases) happens before this is called.
     with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM products WHERE user_id = ? AND name = ?", (user_id, name)
+        ).fetchone()
+        if row:
+            return row["id"]
         cursor = conn.execute(
-            "INSERT INTO expenses (id, payer_id, price, product, description, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                expense_id,
-                payer_id,
-                price,
-                product,
-                description,
-                when.isoformat(timespec="microseconds"),
-            ),
+            "INSERT INTO products (user_id, name) VALUES (?, ?)", (user_id, name)
         )
-        conn.executemany(
-            "INSERT INTO consumers (expense_seq, user_id) VALUES (?, ?)",
-            [(cursor.lastrowid, user_id) for user_id in consumer_ids],
-        )
-    return expense_id
+        return cursor.lastrowid
 
 
 def user_products(user_id):
-    # Distinct products the user paid for or consumed, in the order they were
-    # first recorded (earliest first).
+    # The user's product names (their catalog), in creation order. Used to resolve
+    # a typed product to an existing one.
     with _connect() as conn:
         return [
-            row["product"]
+            row["name"]
             for row in conn.execute(
-                """
-                SELECT e.product FROM expenses e
-                WHERE e.payer_id = ?
-                   OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
-                GROUP BY e.product
-                ORDER BY MIN(e.seq)
-                """,
-                (user_id, user_id),
+                "SELECT name FROM products WHERE user_id = ? ORDER BY id", (user_id,)
             )
         ]
 
@@ -176,14 +170,48 @@ def product_counts(user_id):
     with _connect() as conn:
         return conn.execute(
             """
-            SELECT e.product AS product, COUNT(*) AS n FROM expenses e
+            SELECT p.name AS product, COUNT(*) AS n
+            FROM expenses e
+            JOIN products p ON p.id = e.product_id
             WHERE e.payer_id = ?
                OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
-            GROUP BY e.product
-            ORDER BY n DESC, e.product COLLATE NOCASE
+            GROUP BY e.product_id
+            ORDER BY n DESC, p.name COLLATE NOCASE
             """,
             (user_id, user_id),
         ).fetchall()
+
+
+# --- operations ---
+
+
+def _new_id(when):
+    return when.strftime("%y%m%d") + "".join(
+        random.choices(string.ascii_lowercase, k=2)
+    )
+
+
+def add_expense(payer_id, price, product_id, consumer_ids, when=None, description=None):
+    when = when or datetime.now()
+    expense_id = _new_id(when)
+    with _connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO expenses (id, payer_id, price, product_id, description, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                expense_id,
+                payer_id,
+                price,
+                product_id,
+                description,
+                when.isoformat(timespec="microseconds"),
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO consumers (expense_seq, user_id) VALUES (?, ?)",
+            [(cursor.lastrowid, user_id) for user_id in consumer_ids],
+        )
+    return expense_id
 
 
 def add_income(user_id, amount, description, when=None):
@@ -217,8 +245,9 @@ def remove_operation(user_id, suffix):
     like = f"%{suffix}"
     with _connect() as conn:
         expense = conn.execute(
-            "SELECT seq, id, created_at, price, product, payer_id "
-            "FROM expenses WHERE payer_id = ? AND id LIKE ? ORDER BY seq DESC LIMIT 1",
+            "SELECT e.seq, e.id, e.created_at, e.price, p.name AS product, e.payer_id "
+            "FROM expenses e JOIN products p ON p.id = e.product_id "
+            "WHERE e.payer_id = ? AND e.id LIKE ? ORDER BY e.seq DESC LIMIT 1",
             (user_id, like),
         ).fetchone()
         income = conn.execute(
@@ -275,10 +304,11 @@ def recent_operations(user_id, limit=6, since=None):
     with _connect() as conn:
         expenses = conn.execute(
             """
-            SELECT e.seq, e.id, e.created_at, e.product, e.description, e.price,
+            SELECT e.seq, e.id, e.created_at, p.name AS product, e.description, e.price,
                    u.name AS buyer
             FROM expenses e
             JOIN users u ON u.user_id = e.payer_id
+            JOIN products p ON p.id = e.product_id
             WHERE e.payer_id = ?
                OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
             """,
@@ -343,10 +373,11 @@ def expense_summary(user_id, limit=6, since=None):
     # from that datetime on are counted; with `limit` only the top that many
     # products. Payments are not expenses, so they are excluded.
     query = """
-        SELECT e.product AS product,
+        SELECT p.name AS product,
                SUM(e.price * 1.0 / counts.n) AS total,
                MAX(e.description IS NOT NULL AND e.description != '') AS has_description
         FROM expenses e
+        JOIN products p ON p.id = e.product_id
         JOIN consumers c ON c.expense_seq = e.seq
         JOIN (
             SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
@@ -357,7 +388,7 @@ def expense_summary(user_id, limit=6, since=None):
     if since is not None:
         query += " AND e.created_at >= ?"
         params.append(since.isoformat())
-    query += " GROUP BY e.product ORDER BY total DESC"
+    query += " GROUP BY e.product_id ORDER BY total DESC"
     if limit is not None:
         query += " LIMIT ?"
         params.append(limit)
@@ -412,7 +443,7 @@ def balance(user_id):
             ) d
             JOIN users u ON u.user_id = d.other_id
             GROUP BY d.other_id
-            HAVING ROUND(net, 2) != 0
+            HAVING ROUND(net) != 0
             """,
             (user_id, user_id, user_id, user_id),
         ).fetchall()

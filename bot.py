@@ -210,7 +210,7 @@ async def record_expense(message, command, force):
     if is_number(product):
         await reply(message, "Product cannot be a number.")
         return
-    price = float(parts[1])
+    price = parse_amount(parts[1])
 
     # /add collapses the product to the sender's existing spelling (same name
     # ignoring case, or a one-letter typo); /addf stores it exactly as typed.
@@ -226,10 +226,12 @@ async def record_expense(message, command, force):
             product = existing
         display_product = f"{product}*" if is_new else product
 
+    product_id = db.get_or_create_product(message.from_user.id, product)
+
     # Own expense: paid and consumed by the sender.
     if len(parts) < 4:
         user_id = message.from_user.id
-        expense_id = db.add_expense(user_id, price, product, [user_id], when, description)
+        expense_id = db.add_expense(user_id, price, product_id, [user_id], when, description)
         name = db.get_name(user_id)
         await reply(
             message,
@@ -254,7 +256,7 @@ async def record_expense(message, command, force):
 
     consumer_ids = [user_id for user_id, name in beneficiaries]
     consumer_names = [name for user_id, name in beneficiaries]
-    expense_id = db.add_expense(payer_id, price, product, consumer_ids, when, description)
+    expense_id = db.add_expense(payer_id, price, product_id, consumer_ids, when, description)
 
     text = operation_message("Added", display_product, price, payer, consumer_names, expense_id)
     recipients = {message.from_user.id, payer_id} | set(consumer_ids)
@@ -287,8 +289,13 @@ async def remove(message: Message, command: CommandObject):
     await broadcast(message, recipients, text)
 
 
-def format_price(price):
-    return f"{price:.2f}".rstrip("0").rstrip(".")
+def parse_amount(text):
+    # A decimal amount typed by the user, stored as an integer number of cents.
+    return round(float(text) * 100)
+
+
+def format_price(cents):
+    return f"{cents / 100:.2f}".rstrip("0").rstrip(".")
 
 
 def short_product(product, has_description=False):
@@ -353,7 +360,7 @@ async def list_operations(message: Message, command: CommandObject):
         (
             op["created_at"][8:10],
             short_product(op["product"], bool(op["description"])),
-            f"{op['price']:.0f}",
+            f"{op['price'] / 100:.0f}",
             op["buyer"][:2],
             consumer_cell(op["consumers"], total_users),
         )
@@ -378,7 +385,7 @@ async def detailed_list(message: Message, command: CommandObject):
         if op["description"]:
             lines.append(f"Description: {op['description']}")
         lines += [
-            f"Price: {op['price']:.2f}",
+            f"Price: {op['price'] / 100:.2f}",
             f"Pay: {op['buyer']}",
             f"For: {', '.join(op['consumers'])}",
             f"ID: {op['id']}",
@@ -401,7 +408,7 @@ async def income(message: Message, command: CommandObject):
     if is_number(name):
         await reply(message, "Name cannot be a number.")
         return
-    amount = float(parts[1])
+    amount = parse_amount(parts[1])
     income_id = db.add_income(message.from_user.id, amount, name, when)
     await reply(message, f"Income {name} (${format_price(amount)})\nID: {income_id}")
 
@@ -421,7 +428,7 @@ async def balance(message: Message, command: CommandObject):
 
     if summary:
         expense_rows = [
-            (short_product(s["product"], bool(s["has_description"])), f"{s['total']:.2f}")
+            (short_product(s["product"], bool(s["has_description"])), f"{s['total'] / 100:.2f}")
             for s in summary
         ]
         block = table_block("🧾", label, ("Product", "Total"), expense_rows)
@@ -431,14 +438,14 @@ async def balance(message: Message, command: CommandObject):
         debts = []
         for r in rows:
             if r["net"] > 0:
-                debts.append(f"🤝 {r['name']} owes you ${r['net']:.2f}")
+                debts.append(f"🤝 {r['name']} owes you ${r['net'] / 100:.2f}")
             else:
-                debts.append(f"🤝 You owe {r['name']} ${-r['net']:.2f}")
+                debts.append(f"🤝 You owe {r['name']} ${-r['net'] / 100:.2f}")
         sections.append(html.escape("\n".join(debts)))
 
     sections.append(
-        f"<b>{html.escape(f'💵 Cash: ${cash:.2f}')}</b>\n"
-        f"<b>{html.escape(f'💰 After debts: ${cash + net:.2f}')}</b>"
+        f"<b>{html.escape(f'💵 Cash: ${cash / 100:.2f}')}</b>\n"
+        f"<b>{html.escape(f'💰 After debts: ${(cash + net) / 100:.2f}')}</b>"
     )
 
     body = "\n\n".join(sections)
@@ -459,7 +466,7 @@ async def products(message: Message, command: CommandObject):
 @dp.message(Command("pay"))
 async def pay(message: Message, command: CommandObject):
     parts = command.args.split()
-    amount = float(parts[-1])
+    amount = parse_amount(parts[-1])
 
     # "<payer> <payee> <amount>" lets anyone record a payment between two users;
     # "<payee> <amount>" means the sender is the payer.
