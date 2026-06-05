@@ -57,6 +57,9 @@ HELP_TEXT = (
     "/balance [n N | m [K] | d [K]]\n"
     "show expenses, debts and money\n"
     "\n"
+    "/set_table_width <number>\n"
+    "set the width of the /list and /balance tables\n"
+    "\n"
     "/pay [payer] <payee> <amount>\n"
     "record a payment"
 )
@@ -332,13 +335,33 @@ def format_price(cents):
     return f"{cents / 100:.2f}".rstrip("0").rstrip(".")
 
 
-def short_product(product, has_description=False):
-    # Products with a description carry a trailing "+". The whole cell is kept to
-    # 7 characters: e.g. "Supermarket" -> "Super..", "Supermarket+" -> "Supe..+".
-    suffix = "+" if has_description else ""
-    if len(product) + len(suffix) <= 7:
-        return product + suffix
-    return product[: 7 - 2 - len(suffix)] + ".." + suffix
+DEFAULT_TABLE_WIDTH = 30  # used until a user picks their own with /set_table_width
+MIN_TABLE_WIDTH = 20  # below this the Product column can't hold its header
+
+
+def table_width(user_id):
+    return int(db.get_pref(user_id, "table_width", DEFAULT_TABLE_WIDTH))
+
+
+def truncate(text, width):
+    if len(text) <= width:
+        return text
+    return text[: width - 3] + "..."
+
+
+def product_cell(name, description, width):
+    # Product name plus its description in parentheses, kept to `width` chars.
+    # When it overflows, the description is cut and a "...)" tail is preserved:
+    # "Supermarket (drink by sugar t...)".
+    if not description:
+        return truncate(name, width)
+    full = f"{name} ({description})"
+    if len(full) <= width:
+        return full
+    keep = width - len(name) - len(" (") - len("...)")
+    if keep < 1:
+        return truncate(name, width)
+    return f"{name} ({description[:keep]}...)"
 
 
 def operation_message(verb, product, price, payer_name, consumer_names, op_id):
@@ -357,16 +380,9 @@ def payment_message(payer_name, payee_name, amount, payment_id):
     )
 
 
-def consumer_cell(consumers, total_users):
-    if len(consumers) == 1:
-        return consumers[0][:2]
-    if len(consumers) == total_users:
-        return "All"
-    return "Mix"
-
-
-def format_table(header, rows):
-    widths = [max(len(row[i]) for row in [header] + rows) for i in range(len(header))]
+def format_table(header, rows, widths=None):
+    if widths is None:
+        widths = [max(len(row[i]) for row in [header] + rows) for i in range(len(header))]
 
     def line(cells):
         return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
@@ -375,9 +391,9 @@ def format_table(header, rows):
     return "\n".join([line(header), separator] + [line(row) for row in rows])
 
 
-def table_block(emoji, label, header, rows):
+def table_block(emoji, label, header, rows, widths=None):
     # An emoji-labelled table closed by a rule as wide as the table itself.
-    table = format_table(header, rows)
+    table = format_table(header, rows, widths)
     width = max(len(line) for line in table.splitlines())
     return f"{emoji} {label}\n\n{table}\n{'-' * width}"
 
@@ -389,18 +405,21 @@ async def list_operations(message: Message, command: CommandObject):
     if not operations:
         await reply(message, "No operations.")
         return
-    total_users = db.count_users()
+    width = table_width(message.from_user.id)
+    day_w = max(len("Day"), *(len(op["created_at"][8:10]) for op in operations))
+    prices = [f"{op['price'] / 100:.0f}" for op in operations]
+    price_w = max(len("Price"), *(len(p) for p in prices))
+    product_w = width - day_w - price_w - 4
     rows = [
         (
             op["created_at"][8:10],
-            short_product(op["product"], bool(op["description"])),
-            f"{op['price'] / 100:.0f}",
-            op["buyer"][:2],
-            consumer_cell(op["consumers"], total_users),
+            product_cell(op["product"], op["description"], product_w),
+            price,
         )
-        for op in operations
+        for op, price in zip(operations, prices)
     ]
-    block = table_block("📋", label, ("Day", "Product", "Price", "Pay", "For"), rows)
+    widths = [day_w, product_w, price_w]
+    block = table_block("📋", label, ("Day", "Product", "Price"), rows, widths)
     await reply(message, block)
 
 
@@ -461,11 +480,15 @@ async def balance(message: Message, command: CommandObject):
     sections = []
 
     if summary:
+        totals = [f"{s['total'] / 100:.2f}" for s in summary]
+        total_w = max(len("Total"), *(len(t) for t in totals))
+        product_w = table_width(user_id) - total_w - 2
         expense_rows = [
-            (short_product(s["product"], bool(s["has_description"])), f"{s['total'] / 100:.2f}")
-            for s in summary
+            (product_cell(s["product"], None, product_w), total)
+            for s, total in zip(summary, totals)
         ]
-        block = table_block("🧾", label, ("Product", "Total"), expense_rows)
+        widths = [product_w, total_w]
+        block = table_block("🧾", label, ("Product", "Total"), expense_rows, widths)
         sections.append(html.escape(block))
 
     if rows:
@@ -519,6 +542,20 @@ async def alias(message: Message, command: CommandObject):
     product_id = db.get_or_create_product(user_id, product)
     db.set_alias(user_id, alias_name, product_id)
     await reply(message, f"Alias {alias_name.lower()} -> {product}")
+
+
+@dp.message(Command("set_table_width"))
+async def set_table_width(message: Message, command: CommandObject):
+    value = (command.args or "").strip()
+    if not value.isdigit():
+        await reply(message, "Usage: /set_table_width <number>")
+        return
+    width = int(value)
+    if width < MIN_TABLE_WIDTH:
+        await reply(message, f"Width must be at least {MIN_TABLE_WIDTH}")
+        return
+    db.set_pref(message.from_user.id, "table_width", width)
+    await reply(message, f"Table width set to {width}")
 
 
 @dp.message(Command("pay"))

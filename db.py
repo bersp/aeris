@@ -93,6 +93,17 @@ def init_db():
             )
             """
         )
+        # A generic per-user key-value store for settings (e.g. table_width).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS preferences (
+                user_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (user_id, key)
+            )
+            """
+        )
 
 
 # --- users ---
@@ -143,6 +154,27 @@ def all_users():
 def count_users():
     with _connect() as conn:
         return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+
+# --- preferences ---
+
+
+def get_pref(user_id, key, default=None):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM preferences WHERE user_id = ? AND key = ?",
+            (user_id, key),
+        ).fetchone()
+        return row["value"] if row else default
+
+
+def set_pref(user_id, key, value):
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO preferences (user_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+            (user_id, key, str(value)),
+        )
 
 
 # --- products ---
