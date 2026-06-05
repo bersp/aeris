@@ -64,6 +64,45 @@ def parse_date(token):
     return None
 
 
+def _within_one_edit(a, b):
+    # True if a and b are equal or differ by a single character insertion,
+    # deletion or substitution (compared case-insensitively).
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long = (a, b) if len(a) < len(b) else (b, a)
+    i = j = 0
+    skipped = False
+    while i < len(short) and j < len(long):
+        if short[i] == long[j]:
+            i += 1
+            j += 1
+        elif skipped:
+            return False
+        else:
+            skipped = True
+            j += 1
+    return True
+
+
+def resolve_product(user_id, product):
+    # The registered spelling this product should collapse to: an exact match
+    # (ignoring case) wins, otherwise the first product differing by a single
+    # letter. None if it is a brand-new product. Earliest registered wins.
+    products = db.user_products(user_id)
+    for existing in products:
+        if existing.lower() == product.lower():
+            return existing
+    for existing in products:
+        if _within_one_edit(existing, product):
+            return existing
+    return None
+
+
 def is_number(value):
     try:
         float(value)
@@ -113,10 +152,12 @@ async def start(message: Message):
         "/register <name> - register with a name\n"
         "/rename <name> - change your name\n"
         "/add [date] <product> <price> [payer] [beneficiaries] - record an expense\n"
+        "/addf [date] <product> <price> [payer] [beneficiaries] - same, forcing the exact product name\n"
         "/remove <id suffix> - remove an expense or income\n"
         "/list [n N | m [K] | d [K]] - operations (last 6 by default)\n"
         "/detailedlist [n N | m [K] | d [K]] - operations in detail\n"
         "/income [date] <name> <amount> - record an income\n"
+        "/products - list your products with how many times each was bought\n"
         "/balance [n N | m [K] | d [K]] - show expenses, debts and money\n"
         "/pay [payer] <payee> <amount> - record a payment",
     )
@@ -138,6 +179,17 @@ async def rename(message: Message, command: CommandObject):
 
 @dp.message(Command("add"))
 async def add(message: Message, command: CommandObject):
+    await record_expense(message, command, force=False)
+
+
+# /addf forces the product exactly as typed, skipping the standardization /add
+# applies, for short products that are legitimately similar to existing ones.
+@dp.message(Command("addf"))
+async def add_forced(message: Message, command: CommandObject):
+    await record_expense(message, command, force=True)
+
+
+async def record_expense(message, command, force):
     parts = command.args.split()
 
     # Optional purchase date as the first argument (today if omitted).
@@ -151,13 +203,28 @@ async def add(message: Message, command: CommandObject):
         return
     price = float(parts[1])
 
+    # /add collapses the product to the sender's existing spelling (same name
+    # ignoring case, or a one-letter typo); /addf stores it exactly as typed.
+    # Either way a product not seen before is flagged with a trailing "*" in the
+    # confirmation (display only, never stored).
+    if force:
+        is_new = product not in db.user_products(message.from_user.id)
+        display_product = f"{product}*" if is_new else product
+    else:
+        existing = resolve_product(message.from_user.id, product)
+        is_new = existing is None
+        if existing is not None:
+            product = existing
+        display_product = f"{product}*" if is_new else product
+
     # Own expense: paid and consumed by the sender.
     if len(parts) < 4:
         user_id = message.from_user.id
         expense_id = db.add_expense(user_id, price, product, [user_id], when)
         name = db.get_name(user_id)
         await reply(
-            message, operation_message("Added", product, price, name, [name], expense_id)
+            message,
+            operation_message("Added", display_product, price, name, [name], expense_id),
         )
         return
 
@@ -180,7 +247,7 @@ async def add(message: Message, command: CommandObject):
     consumer_names = [name for user_id, name in beneficiaries]
     expense_id = db.add_expense(payer_id, price, product, consumer_ids, when)
 
-    text = operation_message("Added", product, price, payer, consumer_names, expense_id)
+    text = operation_message("Added", display_product, price, payer, consumer_names, expense_id)
     recipients = {message.from_user.id, payer_id} | set(consumer_ids)
     await broadcast(message, recipients, text)
 
@@ -213,6 +280,10 @@ async def remove(message: Message, command: CommandObject):
 
 def format_price(price):
     return f"{price:.2f}".rstrip("0").rstrip(".")
+
+
+def short_product(product):
+    return product if len(product) <= 7 else product[:5] + ".."
 
 
 def operation_message(verb, product, price, payer_name, consumer_names, op_id):
@@ -267,7 +338,7 @@ async def list_operations(message: Message, command: CommandObject):
     rows = [
         (
             op["created_at"][8:10],
-            op["product"],
+            short_product(op["product"]),
             f"{op['price']:.0f}",
             op["buyer"][:2],
             consumer_cell(op["consumers"], total_users),
@@ -333,7 +404,7 @@ async def balance(message: Message, command: CommandObject):
     sections = []
 
     if summary:
-        expense_rows = [(s["product"], f"{s['total']:.2f}") for s in summary]
+        expense_rows = [(short_product(s["product"]), f"{s['total']:.2f}") for s in summary]
         block = table_block("🧾", label, ("Product", "Total"), expense_rows)
         sections.append(html.escape(block))
 
@@ -353,6 +424,17 @@ async def balance(message: Message, command: CommandObject):
 
     body = "\n\n".join(sections)
     await message.answer(f"<code>{body}</code>", parse_mode="HTML")
+
+
+@dp.message(Command("products"))
+async def products(message: Message, command: CommandObject):
+    rows = db.product_counts(message.from_user.id)
+    if not rows:
+        await reply(message, "No products.")
+        return
+    table_rows = [(r["product"], str(r["n"])) for r in rows]
+    block = table_block("🏷️", "Products", ("Product", "Count"), table_rows)
+    await reply(message, block)
 
 
 @dp.message(Command("pay"))

@@ -15,6 +15,17 @@ Telegram bot to manage personal expenses.
   `dd/mm` or `dd` (missing parts are taken from today); e.g. `/add 01/06 carne
   800`. Without it, today is used.
 - Products cannot be numbers.
+- A product matching one you already used is standardized to your original
+  spelling. This covers both case (after `Pizza`, both `pizza` and `PIZZA` become
+  `Pizza`) and a single-letter typo —insertion, deletion or substitution— (e.g.
+  `Pizzza`, `Piza` and `Pozza` all become `Pizza`). A product you have never used
+  before is flagged with a trailing `*` in the confirmation (e.g.
+  `Added Pizza* ($20)`).
+- `/addf <product> <price> [payer] [beneficiaries]` — same as `/add` but forces
+  the product exactly as typed, skipping the case/typo standardization above.
+  Useful for short products legitimately similar to existing ones (e.g. adding
+  `Sofa` when you already have `Soda`). A product whose exact name is new is
+  still flagged with a trailing `*`. Same optional date argument as `/add`.
 - A confirmation with the product, price, payer, consumers and id is sent to
   everyone involved in the expense.
 - `/remove <last|id suffix>` — remove an expense (the latest one whose id ends
@@ -27,6 +38,10 @@ Telegram bot to manage personal expenses.
 - `/detailedlist` — same operations and same optional arguments as `/list`, but
   one field per line (full date, product, price, payer name, consumers and full
   id), separated by `----`
+- In `/list` and `/balance`, product names longer than 7 characters are shown as
+  their first 5 characters plus `..` (e.g. `Supermarket` → `Super..`).
+- `/products` — list your products (those you paid for or consumed) with how many
+  times each was bought, most-bought first
 - `/balance` — show your net debts with the other users
 - `/pay <payee> <amount>` — pay money to another user, settling part or all of a
   debt (a money-only transaction, no product involved). You can also write

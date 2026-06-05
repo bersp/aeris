@@ -143,6 +143,41 @@ def add_expense(payer_id, price, product, consumer_ids, when=None):
     return expense_id
 
 
+def user_products(user_id):
+    # Distinct products the user paid for or consumed, in the order they were
+    # first recorded (earliest first).
+    with _connect() as conn:
+        return [
+            row["product"]
+            for row in conn.execute(
+                """
+                SELECT e.product FROM expenses e
+                WHERE e.payer_id = ?
+                   OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
+                GROUP BY e.product
+                ORDER BY MIN(e.seq)
+                """,
+                (user_id, user_id),
+            )
+        ]
+
+
+def product_counts(user_id):
+    # Each product the user paid for or consumed, with how many expenses used it,
+    # most-bought first.
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT e.product AS product, COUNT(*) AS n FROM expenses e
+            WHERE e.payer_id = ?
+               OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
+            GROUP BY e.product
+            ORDER BY n DESC, e.product COLLATE NOCASE
+            """,
+            (user_id, user_id),
+        ).fetchall()
+
+
 def add_income(user_id, amount, description, when=None):
     when = when or datetime.now()
     income_id = _new_id(when)
