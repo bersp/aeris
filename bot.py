@@ -441,18 +441,16 @@ async def detailed_list(message: Message, command: CommandObject):
     for op in operations:
         created_at = op["created_at"]
         day = f"{created_at[8:10]}/{created_at[5:7]}/{created_at[2:4]}"
-        lines = [f"Day: {day}", f"Product: {pretty_product(op['product'])}"]
-        if op["description"]:
-            lines.append(f"Description: {op['description']}")
-        lines += [
-            f"Price: {op['price'] / 100:.2f}",
-            f"Pay: {op['buyer']}",
-            f"For: {', '.join(op['consumers'])}",
-            f"ID: {op['id']}",
+        lines = [
+            f"🗓 {day}   #{op['id']}",
+            f"🛒 {pretty_product(op['product'])} — ${format_price(op['price'])}",
         ]
+        if op["description"]:
+            lines.append(f"📝 {op['description']}")
+        lines.append(f"👤 {op['buyer']} → {', '.join(op['consumers'])}")
         blocks.append("\n".join(lines))
-    detail = "\n----\n".join(blocks)
-    await reply(message, f"{label}\n{detail}")
+    body = "\n\n".join(blocks)
+    await reply(message, f"📖 {label}\n\n{body}")
 
 
 @dp.message(Command("income"))
