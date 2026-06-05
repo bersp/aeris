@@ -349,10 +349,17 @@ def truncate(text, width):
     return text[: width - 3] + "..."
 
 
+def pretty_product(name):
+    # Product names are typed as a single token, so underscores stand in for the
+    # spaces they are shown with, e.g. "my_product" -> "my product".
+    return name.replace("_", " ")
+
+
 def product_cell(name, description, width):
     # Product name plus its description in parentheses, kept to `width` chars.
     # When it overflows, the description is cut and a "...)" tail is preserved:
     # "Supermarket (drink by sugar t...)".
+    name = pretty_product(name)
     if not description:
         return truncate(name, width)
     full = f"{name} ({description})"
@@ -434,7 +441,7 @@ async def detailed_list(message: Message, command: CommandObject):
     for op in operations:
         created_at = op["created_at"]
         day = f"{created_at[8:10]}/{created_at[5:7]}/{created_at[2:4]}"
-        lines = [f"Day: {day}", f"Product: {op['product']}"]
+        lines = [f"Day: {day}", f"Product: {pretty_product(op['product'])}"]
         if op["description"]:
             lines.append(f"Description: {op['description']}")
         lines += [
@@ -515,7 +522,7 @@ async def products(message: Message, command: CommandObject):
     if not rows:
         await reply(message, "No products.")
         return
-    table_rows = [(r["product"], str(r["n"]), r["aliases"] or "") for r in rows]
+    table_rows = [(pretty_product(r["product"]), str(r["n"]), r["aliases"] or "") for r in rows]
     block = table_block("🏷️", "Products", ("Product", "Count", "Aliases"), table_rows)
     await reply(message, block)
 
