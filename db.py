@@ -189,6 +189,15 @@ def set_alias(user_id, alias, product_id):
         )
 
 
+def remove_alias(user_id, alias):
+    # Delete one of the user's aliases. Returns whether it existed.
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM aliases WHERE user_id = ? AND alias = ?", (user_id, alias.lower())
+        )
+        return cursor.rowcount > 0
+
+
 def alias_product(user_id, alias):
     # The product name an alias resolves to for this user, or None.
     with _connect() as conn:

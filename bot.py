@@ -52,7 +52,7 @@ HELP_TEXT = (
     "list your products with how many times each was bought\n"
     "\n"
     "/alias <alias> <product>\n"
-    "define a shortcut for a product\n"
+    "define a shortcut for a product (-d <alias> to delete)\n"
     "\n"
     "/balance [n N | m [K] | d [K]]\n"
     "show expenses, debts and money\n"
@@ -500,10 +500,19 @@ async def products(message: Message, command: CommandObject):
 @dp.message(Command("alias"))
 async def alias(message: Message, command: CommandObject):
     # "<alias> <product>": typing <alias> in /add then records <product>.
+    # "-d <alias>": delete an alias.
     parts = command.args.split()
-    alias_name, product = parts[0], parts[1]
-
     user_id = message.from_user.id
+
+    if parts[0] == "-d":
+        alias_name = parts[1]
+        if db.remove_alias(user_id, alias_name):
+            await reply(message, f"Removed alias {alias_name.lower()}")
+        else:
+            await reply(message, f"No alias {alias_name.lower()}")
+        return
+
+    alias_name, product = parts[0], parts[1]
     existing = resolve_product(user_id, product)
     if existing is not None:
         product = existing
