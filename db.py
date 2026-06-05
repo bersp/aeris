@@ -37,6 +37,17 @@ def init_db():
             )
             """
         )
+        # A per-user shortcut typed in place of a product name, e.g. "super" for
+        # the user's "Supermarket" product.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aliases (
+                user_id INTEGER NOT NULL,
+                alias TEXT NOT NULL,
+                product_id INTEGER NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS expenses (
@@ -164,13 +175,40 @@ def user_products(user_id):
         ]
 
 
+def set_alias(user_id, alias, product_id):
+    # Point a (lowercased) alias at one of the user's products, replacing any
+    # previous target for that alias.
+    alias = alias.lower()
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM aliases WHERE user_id = ? AND alias = ?", (user_id, alias)
+        )
+        conn.execute(
+            "INSERT INTO aliases (user_id, alias, product_id) VALUES (?, ?, ?)",
+            (user_id, alias, product_id),
+        )
+
+
+def alias_product(user_id, alias):
+    # The product name an alias resolves to for this user, or None.
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT p.name FROM aliases a JOIN products p ON p.id = a.product_id "
+            "WHERE a.user_id = ? AND a.alias = ?",
+            (user_id, alias.lower()),
+        ).fetchone()
+        return row["name"] if row else None
+
+
 def product_counts(user_id):
-    # Each product the user paid for or consumed, with how many expenses used it,
-    # most-bought first.
+    # Each product the user paid for or consumed, with how many expenses used it
+    # and the user's aliases for it, most-bought first.
     with _connect() as conn:
         return conn.execute(
             """
-            SELECT p.name AS product, COUNT(*) AS n
+            SELECT p.name AS product, COUNT(*) AS n,
+                   (SELECT GROUP_CONCAT(a.alias, ', ') FROM aliases a
+                    WHERE a.product_id = e.product_id AND a.user_id = ?) AS aliases
             FROM expenses e
             JOIN products p ON p.id = e.product_id
             WHERE e.payer_id = ?
@@ -178,7 +216,7 @@ def product_counts(user_id):
             GROUP BY e.product_id
             ORDER BY n DESC, p.name COLLATE NOCASE
             """,
-            (user_id, user_id),
+            (user_id, user_id, user_id),
         ).fetchall()
 
 

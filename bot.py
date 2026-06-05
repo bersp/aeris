@@ -91,9 +91,13 @@ def _within_one_edit(a, b):
 
 
 def resolve_product(user_id, product):
-    # The registered spelling this product should collapse to: an exact match
-    # (ignoring case) wins, otherwise the first product differing by a single
-    # letter. None if it is a brand-new product. Earliest registered wins.
+    # The registered spelling this product should collapse to: a defined alias
+    # wins, then an exact match (ignoring case), then the first product differing
+    # by a single letter. None if it is a brand-new product. Earliest registered
+    # wins.
+    aliased = db.alias_product(user_id, product)
+    if aliased is not None:
+        return aliased
     products = db.user_products(user_id)
     for existing in products:
         if existing.lower() == product.lower():
@@ -159,6 +163,7 @@ async def start(message: Message):
         "/detailedlist [n N | m [K] | d [K]] - operations in detail\n"
         "/income [date] <name> <amount> - record an income\n"
         "/products - list your products with how many times each was bought\n"
+        "/alias <alias> <product> - define a shortcut for a product\n"
         "/balance [n N | m [K] | d [K]] - show expenses, debts and money\n"
         "/pay [payer] <payee> <amount> - record a payment",
     )
@@ -458,9 +463,24 @@ async def products(message: Message, command: CommandObject):
     if not rows:
         await reply(message, "No products.")
         return
-    table_rows = [(r["product"], str(r["n"])) for r in rows]
-    block = table_block("🏷️", "Products", ("Product", "Count"), table_rows)
+    table_rows = [(r["product"], str(r["n"]), r["aliases"] or "") for r in rows]
+    block = table_block("🏷️", "Products", ("Product", "Count", "Aliases"), table_rows)
     await reply(message, block)
+
+
+@dp.message(Command("alias"))
+async def alias(message: Message, command: CommandObject):
+    # "<alias> <product>": typing <alias> in /add then records <product>.
+    parts = command.args.split()
+    alias_name, product = parts[0], parts[1]
+
+    user_id = message.from_user.id
+    existing = resolve_product(user_id, product)
+    if existing is not None:
+        product = existing
+    product_id = db.get_or_create_product(user_id, product)
+    db.set_alias(user_id, alias_name, product_id)
+    await reply(message, f"Alias {alias_name.lower()} -> {product}")
 
 
 @dp.message(Command("pay"))

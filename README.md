@@ -47,7 +47,11 @@ Telegram bot to manage personal expenses.
   with a description keep the `+` within the same 7-character width (e.g.
   `Supermarket+` → `Supe..+`).
 - `/products` — list your products (those you paid for or consumed) with how many
-  times each was bought, most-bought first
+  times each was bought and your aliases for them, most-bought first
+- `/alias <alias> <product>` — define a personal shortcut so typing the alias in
+  `/add` records the product instead (e.g. `/alias super Supermarket`, then `/add
+  super 1500` records `Supermarket`). Aliases are matched ignoring case and take
+  precedence over the case/typo standardization.
 - `/balance` — show your net debts with the other users
 - `/pay <payee> <amount>` — pay money to another user, settling part or all of a
   debt (a money-only transaction, no product involved). You can also write
