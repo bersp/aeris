@@ -4,8 +4,8 @@ Telegram bot to manage personal expenses.
 
 ## Commands
 
-- `/register <name>` — register with a name
-- `/rename <name>` — change your name
+- `/register <name>` — register with a name, or rename yourself if already
+  registered (reports the rename from the old name to the new one)
 - `/add <product> <price>` — record an own expense (paid and consumed by you)
 - `/add <product> <price> <payer> <beneficiaries>` — record a shared expense.
   Beneficiaries are separated by `/` (e.g. `bernardo/mercedes`) or `all` for

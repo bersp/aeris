@@ -154,8 +154,7 @@ async def start(message: Message):
         message,
         "Aeris\n\n"
         "Commands:\n"
-        "/register <name> - register with a name\n"
-        "/rename <name> - change your name\n"
+        "/register <name> - register or rename yourself\n"
         "/add [date] <product[(description)]> <price> [payer] [beneficiaries] - record an expense\n"
         "/addf [date] <product> <price> [payer] [beneficiaries] - same, forcing the exact product name\n"
         "/remove <id suffix> - remove an expense or income\n"
@@ -172,15 +171,13 @@ async def start(message: Message):
 @dp.message(Command("register"))
 async def register(message: Message, command: CommandObject):
     name = command.args.strip()
-    db.set_name(message.from_user.id, name)
-    await reply(message, f"Registered as {name}")
-
-
-@dp.message(Command("rename"))
-async def rename(message: Message, command: CommandObject):
-    name = command.args.strip()
-    db.set_name(message.from_user.id, name)
-    await reply(message, f"Renamed to {name}")
+    user_id = message.from_user.id
+    old_name = db.get_name(user_id)
+    db.set_name(user_id, name)
+    if old_name is None:
+        await reply(message, f"Registered as {name}")
+    else:
+        await reply(message, f"Renamed from {old_name} to {name}")
 
 
 @dp.message(Command("add"))
