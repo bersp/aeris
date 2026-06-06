@@ -41,7 +41,7 @@ HELP_TEXT = (
     "remove an expense or income (also /rm)\n"
     "\n"
     "/list [n N | m [K] | d [K]]\n"
-    "operations (last 6 by default)\n"
+    "operations (last month by default)\n"
     "\n"
     "/detailedlist [n N | m [K] | d [K]]\n"
     "operations in detail\n"
@@ -177,24 +177,24 @@ def _months_ago(months):
     return datetime(year, month + 1, 1)
 
 
-def parse_list_args(args, noun="operations", count_word="Last"):
+def parse_list_args(args, noun="operations", count_word="Last", default="n 6"):
     # Returns (limit, since, label): how many of the latest operations to show or
     # a datetime from which to keep them, plus a human label for the window.
     # `noun`/`count_word` shape the count-mode label (e.g. "Last 6 operations" vs
-    # "Top 6 expenses"). Defaults to the last 6.
+    # "Top 6 expenses"). `default` is used when no valid mode is given.
     parts = (args or "").split()
-    if parts and parts[0] in ("n", "m", "d"):
-        mode = parts[0]
-        number = int(parts[1]) if len(parts) > 1 else None
-        if mode == "n":
-            n = number or 6
-            return n, None, f"{count_word} {n} {noun}"
-        if mode == "m":
-            k = number or 1
-            return None, _months_ago(k), "Last month" if k == 1 else f"Last {k} months"
+    if not (parts and parts[0] in ("n", "m", "d")):
+        parts = default.split()
+    mode = parts[0]
+    number = int(parts[1]) if len(parts) > 1 else None
+    if mode == "n":
+        n = number or 6
+        return n, None, f"{count_word} {n} {noun}"
+    if mode == "m":
         k = number or 1
-        return None, _days_ago(k), "Last day" if k == 1 else f"Last {k} days"
-    return 6, None, f"{count_word} 6 {noun}"
+        return None, _months_ago(k), "Last month" if k == 1 else f"Last {k} months"
+    k = number or 1
+    return None, _days_ago(k), "Last day" if k == 1 else f"Last {k} days"
 
 
 @dp.message(Command("start"))
@@ -413,7 +413,7 @@ def table_block(emoji, label, header, rows, widths=None):
 
 @dp.message(Command("list"))
 async def list_operations(message: Message, command: CommandObject):
-    limit, since, label = parse_list_args(command.args)
+    limit, since, label = parse_list_args(command.args, default="m 1")
     operations = db.recent_operations(message.from_user.id, limit, since)
     if not operations:
         await reply(message, "No operations.")
