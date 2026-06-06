@@ -480,11 +480,16 @@ async def income(message: Message, command: CommandObject):
 @dp.message(Command("balance"))
 async def balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
-    limit, since, label = parse_list_args(command.args, noun="expenses", count_word="Top")
+    limit, since, label = parse_list_args(
+        command.args, noun="expenses", count_word="Top", default="m 1"
+    )
     summary = db.expense_summary(user_id, limit, since)
     rows = db.balance(user_id)
     cash = db.cash_balance(user_id)
     net = sum(r["net"] for r in rows)
+    # Cash and debts are always over everything; only the income figure is scoped
+    # to the current month.
+    month_income = db.income_total(user_id, _months_ago(1))
 
     # Three sections separated by a blank line. Dynamic text is escaped per
     # section so the <b>/<code> tags below pass through untouched.
@@ -512,6 +517,7 @@ async def balance(message: Message, command: CommandObject):
         sections.append(html.escape("\n".join(debts)))
 
     sections.append(
+        f"<b>{html.escape(f'📈 Month income: ${month_income / 100:.2f}')}</b>\n"
         f"<b>{html.escape(f'💵 Cash: ${cash / 100:.2f}')}</b>\n"
         f"<b>{html.escape(f'💰 After debts: ${(cash + net) / 100:.2f}')}</b>"
     )

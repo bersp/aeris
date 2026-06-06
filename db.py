@@ -475,6 +475,17 @@ def expense_summary(user_id, limit=6, since=None):
         return conn.execute(query, params).fetchall()
 
 
+def income_total(user_id, since=None):
+    # Sum of the user's incomes, optionally only those from `since` on.
+    query = "SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE user_id = ?"
+    params = [user_id]
+    if since is not None:
+        query += " AND created_at >= ?"
+        params.append(since.isoformat())
+    with _connect() as conn:
+        return conn.execute(query, params).fetchone()["total"]
+
+
 def cash_balance(user_id):
     # Real money the user holds: incomes received, minus expenses they paid in
     # full, plus payments received from others, minus payments made to others.
