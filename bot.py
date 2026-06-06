@@ -30,14 +30,15 @@ HELP_TEXT = (
     "/register <name>\n"
     "register or rename yourself\n"
     "\n"
-    "/add [date] <product[(description)]> <price> [payer] [beneficiaries]\n"
-    "record an expense\n"
+    "/expense [date] <product[(description)]> <price> [payer] [beneficiaries]\n"
+    "record an expense; the product tries to match a similar existing one "
+    "(also /exp)\n"
     "\n"
-    "/addf [date] <product> <price> [payer] [beneficiaries]\n"
-    "same as /add, forcing the exact product name\n"
+    "/forceexpense [date] <product> <price> [payer] [beneficiaries]\n"
+    "same as /expense but stores the product exactly as typed (also /fexp)\n"
     "\n"
     "/remove <id suffix>\n"
-    "remove an expense or income\n"
+    "remove an expense or income (also /rm)\n"
     "\n"
     "/list [n N | m [K] | d [K]]\n"
     "operations (last 6 by default)\n"
@@ -46,13 +47,16 @@ HELP_TEXT = (
     "operations in detail\n"
     "\n"
     "/income [date] <name> <amount>\n"
-    "record an income\n"
+    "record an income (also /inc)\n"
     "\n"
     "/products\n"
     "list your products with how many times each was bought\n"
     "\n"
     "/alias <alias> <product>\n"
-    "define a shortcut for a product (-d <alias> to delete)\n"
+    "define a shortcut for a product\n"
+    "\n"
+    "/rmalias <alias>\n"
+    "delete a product alias\n"
     "\n"
     "/balance [n N | m [K] | d [K]]\n"
     "show expenses, debts and money\n"
@@ -215,15 +219,16 @@ async def register(message: Message, command: CommandObject):
         await reply(message, f"Renamed from {old_name} to {name}")
 
 
-@dp.message(Command("add"))
-async def add(message: Message, command: CommandObject):
+@dp.message(Command("expense", "exp"))
+async def expense(message: Message, command: CommandObject):
     await record_expense(message, command, force=False)
 
 
-# /addf forces the product exactly as typed, skipping the standardization /add
-# applies, for short products that are legitimately similar to existing ones.
-@dp.message(Command("addf"))
-async def add_forced(message: Message, command: CommandObject):
+# /forceexpense forces the product exactly as typed, skipping the standardization
+# /expense applies, for short products that are legitimately similar to existing
+# ones.
+@dp.message(Command("forceexpense", "fexp"))
+async def force_expense(message: Message, command: CommandObject):
     await record_expense(message, command, force=True)
 
 
@@ -249,8 +254,9 @@ async def record_expense(message, command, force):
         return
     price = parse_amount(parts[1])
 
-    # /add collapses the product to the sender's existing spelling (same name
-    # ignoring case, or a one-letter typo); /addf stores it exactly as typed.
+    # /expense collapses the product to the sender's existing spelling (same name
+    # ignoring case, or a one-letter typo); /forceexpense stores it exactly as
+    # typed.
     # Either way a product not seen before is flagged with a trailing "*" in the
     # confirmation (display only, never stored).
     if force:
@@ -300,7 +306,7 @@ async def record_expense(message, command, force):
     await broadcast(message, recipients, text)
 
 
-@dp.message(Command("remove"))
+@dp.message(Command("remove", "rm"))
 async def remove(message: Message, command: CommandObject):
     suffix = command.args.strip()
     removed = db.remove_operation(message.from_user.id, suffix)
@@ -453,7 +459,7 @@ async def detailed_list(message: Message, command: CommandObject):
     await reply(message, f"📖 {label}\n\n{body}")
 
 
-@dp.message(Command("income"))
+@dp.message(Command("income", "inc"))
 async def income(message: Message, command: CommandObject):
     parts = command.args.split()
 
@@ -527,18 +533,9 @@ async def products(message: Message, command: CommandObject):
 
 @dp.message(Command("alias"))
 async def alias(message: Message, command: CommandObject):
-    # "<alias> <product>": typing <alias> in /add then records <product>.
-    # "-d <alias>": delete an alias.
+    # "<alias> <product>": typing <alias> in /expense then records <product>.
     parts = command.args.split()
     user_id = message.from_user.id
-
-    if parts[0] == "-d":
-        alias_name = parts[1]
-        if db.remove_alias(user_id, alias_name):
-            await reply(message, f"Removed alias {alias_name.lower()}")
-        else:
-            await reply(message, f"No alias {alias_name.lower()}")
-        return
 
     alias_name, product = parts[0], parts[1]
     existing = resolve_product(user_id, product)
@@ -547,6 +544,16 @@ async def alias(message: Message, command: CommandObject):
     product_id = db.get_or_create_product(user_id, product)
     db.set_alias(user_id, alias_name, product_id)
     await reply(message, f"Alias {alias_name.lower()} -> {product}")
+
+
+@dp.message(Command("rmalias"))
+async def rmalias(message: Message, command: CommandObject):
+    alias_name = command.args.strip()
+    user_id = message.from_user.id
+    if db.remove_alias(user_id, alias_name):
+        await reply(message, f"Removed alias {alias_name.lower()}")
+    else:
+        await reply(message, f"No alias {alias_name.lower()}")
 
 
 @dp.message(Command("set_table_width"))
