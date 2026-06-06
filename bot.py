@@ -49,6 +49,9 @@ HELP_TEXT = (
     "/income [date] <name> <amount>\n"
     "record an income (also /inc)\n"
     "\n"
+    "/incomelist [m [K]]\n"
+    "incomes per month (last K months)\n"
+    "\n"
     "/products\n"
     "list your products with how many times each was bought\n"
     "\n"
@@ -493,9 +496,6 @@ async def balance(message: Message, command: CommandObject):
     rows = db.balance(user_id)
     cash = db.cash_balance(user_id)
     net = sum(r["net"] for r in rows)
-    # Cash and debts are always over everything; only the income figure is scoped
-    # to the current month.
-    month_income = db.income_total(user_id, _months_ago(1))
 
     # Sections separated by a blank line: one expense table per month, then
     # debts, then the cash summary. Dynamic text is escaped per section so the
@@ -510,9 +510,13 @@ async def balance(message: Message, command: CommandObject):
         if not summary:
             continue
         month_total = sum(s["total"] for s in summary)
+        amounts = [f"{s['total'] / 100:.0f}" for s in summary]
+        parens = [f"({round(s['total'] / month_total * 100)}%)" for s in summary]
+        amount_w = max(len(a) for a in amounts)
+        paren_w = max(len(p) for p in parens)
         totals = [
-            f"{s['total'] / 100:.0f} ({round(s['total'] / month_total * 100)}%)"
-            for s in summary
+            f"{amount:>{amount_w}} {paren:>{paren_w}}"
+            for amount, paren in zip(amounts, parens)
         ]
         total_w = max(len("Total"), *(len(t) for t in totals))
         product_w = table_width(user_id) - total_w - 2
@@ -536,11 +540,52 @@ async def balance(message: Message, command: CommandObject):
         sections.append(html.escape("\n".join(debts)))
 
     sections.append(
-        f"<b>{html.escape(f'📈 Month income: ${month_income / 100:.2f}')}</b>\n"
         f"<b>{html.escape(f'💵 Cash: ${cash / 100:.2f}')}</b>\n"
         f"<b>{html.escape(f'💰 After debts: ${(cash + net) / 100:.2f}')}</b>"
     )
 
+    body = "\n\n".join(sections)
+    await message.answer(f"<code>{body}</code>", parse_mode="HTML")
+
+
+@dp.message(Command("incomelist"))
+async def income_list(message: Message, command: CommandObject):
+    user_id = message.from_user.id
+    months = parse_balance_months(command.args)
+    sections = []
+
+    # One table per month, oldest first; each income's share is over that
+    # month's own total.
+    for i in range(months, 0, -1):
+        start, end = _months_ago(i), _months_ago(i - 1)
+        summary = db.income_summary(user_id, start, end)
+        if not summary:
+            continue
+        month_total = sum(s["total"] for s in summary)
+        amounts = [f"{s['total'] / 100:.0f}" for s in summary]
+        parens = [f"({round(s['total'] / month_total * 100)}%)" for s in summary]
+        amount_w = max(len(a) for a in amounts)
+        paren_w = max(len(p) for p in parens)
+        totals = [
+            f"{amount:>{amount_w}} {paren:>{paren_w}}"
+            for amount, paren in zip(amounts, parens)
+        ]
+        total_w = max(len("Total"), *(len(t) for t in totals))
+        name_w = table_width(user_id) - total_w - 2
+        income_rows = [
+            (product_cell(s["description"], None, name_w), total)
+            for s, total in zip(summary, totals)
+        ]
+        widths = [name_w, total_w]
+        block = table_block(
+            "📈", start.strftime("%B %Y"), ("Income", "Total"), income_rows, widths
+        )
+        block += f"\n\nTotal: ${month_total / 100:.2f}"
+        sections.append(html.escape(block))
+
+    if not sections:
+        await reply(message, "No incomes.")
+        return
     body = "\n\n".join(sections)
     await message.answer(f"<code>{body}</code>", parse_mode="HTML")
 

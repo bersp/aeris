@@ -475,15 +475,20 @@ def expense_summary(user_id, since=None, until=None):
         return conn.execute(query, params).fetchall()
 
 
-def income_total(user_id, since=None):
-    # Sum of the user's incomes, optionally only those from `since` on.
-    query = "SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE user_id = ?"
+def income_summary(user_id, since=None, until=None):
+    # The user's incomes grouped by description and ordered largest first.
+    # `since`/`until` bound the window (since inclusive, until exclusive).
+    query = "SELECT description, SUM(amount) AS total FROM incomes WHERE user_id = ?"
     params = [user_id]
     if since is not None:
         query += " AND created_at >= ?"
         params.append(since.isoformat())
+    if until is not None:
+        query += " AND created_at < ?"
+        params.append(until.isoformat())
+    query += " GROUP BY description ORDER BY total DESC"
     with _connect() as conn:
-        return conn.execute(query, params).fetchone()["total"]
+        return conn.execute(query, params).fetchall()
 
 
 def cash_balance(user_id):
