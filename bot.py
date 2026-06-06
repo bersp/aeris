@@ -64,8 +64,8 @@ HELP_TEXT = (
     "/balance [m [K]]\n"
     "expenses per month (last K months), debts and money\n"
     "\n"
-    "/tablewidth <number>\n"
-    "set the width of the /list and /balance tables\n"
+    "/tablewidth [number]\n"
+    "set the width of the /list and /balance tables (no number restores the default)\n"
     "\n"
     "/pay [payer] <payee> <amount>\n"
     "record a payment"
@@ -629,8 +629,12 @@ async def rmalias(message: Message, command: CommandObject):
 @dp.message(Command("tablewidth"))
 async def tablewidth(message: Message, command: CommandObject):
     value = (command.args or "").strip()
+    if not value:
+        db.set_pref(message.from_user.id, "table_width", DEFAULT_TABLE_WIDTH)
+        await reply(message, f"Table width reset to {DEFAULT_TABLE_WIDTH}")
+        return
     if not value.isdigit():
-        await reply(message, "Usage: /tablewidth <number>")
+        await reply(message, "Usage: /tablewidth [number]")
         return
     width = int(value)
     if width < MIN_TABLE_WIDTH:
