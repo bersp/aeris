@@ -44,13 +44,13 @@ HELP_TEXT = (
     "operations (last month by default)\n"
     "\n"
     "/detailedlist [n N | m [K] | d [K]]\n"
-    "operations in detail\n"
+    "operations in detail (also /dlist)\n"
     "\n"
     "/income [date] <name> <amount>\n"
     "record an income (also /inc)\n"
     "\n"
-    "/incomelist [m [K]]\n"
-    "incomes per month (last K months)\n"
+    "/incomebalance [m [K]]\n"
+    "incomes per month (last K months) (also /incb)\n"
     "\n"
     "/products\n"
     "list your products with how many times each was bought\n"
@@ -64,7 +64,7 @@ HELP_TEXT = (
     "/balance [m [K]]\n"
     "expenses per month (last K months), debts and money\n"
     "\n"
-    "/set_table_width <number>\n"
+    "/tablewidth <number>\n"
     "set the width of the /list and /balance tables\n"
     "\n"
     "/pay [payer] <payee> <amount>\n"
@@ -344,7 +344,7 @@ def format_price(cents):
     return f"{cents / 100:.2f}".rstrip("0").rstrip(".")
 
 
-DEFAULT_TABLE_WIDTH = 30  # used until a user picks their own with /set_table_width
+DEFAULT_TABLE_WIDTH = 30  # used until a user picks their own with /tablewidth
 MIN_TABLE_WIDTH = 20  # below this the Product column can't hold its header
 
 
@@ -439,7 +439,7 @@ async def list_operations(message: Message, command: CommandObject):
     await reply(message, block)
 
 
-@dp.message(Command("detailedlist"))
+@dp.message(Command("detailedlist", "dlist"))
 async def detailed_list(message: Message, command: CommandObject):
     limit, since, label = parse_list_args(command.args)
     operations = db.recent_operations(message.from_user.id, limit, since)
@@ -548,8 +548,8 @@ async def balance(message: Message, command: CommandObject):
     await message.answer(f"<code>{body}</code>", parse_mode="HTML")
 
 
-@dp.message(Command("incomelist"))
-async def income_list(message: Message, command: CommandObject):
+@dp.message(Command("incomebalance", "incb"))
+async def income_balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
     months = parse_balance_months(command.args)
     sections = []
@@ -626,11 +626,11 @@ async def rmalias(message: Message, command: CommandObject):
         await reply(message, f"No alias {alias_name.lower()}")
 
 
-@dp.message(Command("set_table_width"))
-async def set_table_width(message: Message, command: CommandObject):
+@dp.message(Command("tablewidth"))
+async def tablewidth(message: Message, command: CommandObject):
     value = (command.args or "").strip()
     if not value.isdigit():
-        await reply(message, "Usage: /set_table_width <number>")
+        await reply(message, "Usage: /tablewidth <number>")
         return
     width = int(value)
     if width < MIN_TABLE_WIDTH:
