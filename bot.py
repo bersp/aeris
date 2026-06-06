@@ -58,8 +58,8 @@ HELP_TEXT = (
     "/rmalias <alias>\n"
     "delete a product alias\n"
     "\n"
-    "/balance [n N | m [K] | d [K]]\n"
-    "show expenses, debts and money\n"
+    "/balance [m [K]]\n"
+    "expenses per month (last K months), debts and money\n"
     "\n"
     "/set_table_width <number>\n"
     "set the width of the /list and /balance tables\n"
@@ -477,13 +477,19 @@ async def income(message: Message, command: CommandObject):
     await reply(message, f"Income {name} (${format_price(amount)})\nID: {income_id}")
 
 
+def parse_balance_months(args):
+    # /balance only takes a month count: "m K" or "m" (1). Anything else falls
+    # back to the current month.
+    parts = (args or "").split()
+    if parts and parts[0] == "m":
+        return int(parts[1]) if len(parts) > 1 else 1
+    return 1
+
+
 @dp.message(Command("balance"))
 async def balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
-    limit, since, label = parse_list_args(
-        command.args, noun="expenses", count_word="Top", default="m 1"
-    )
-    summary = db.expense_summary(user_id, limit, since)
+    months = parse_balance_months(command.args)
     rows = db.balance(user_id)
     cash = db.cash_balance(user_id)
     net = sum(r["net"] for r in rows)
@@ -491,12 +497,23 @@ async def balance(message: Message, command: CommandObject):
     # to the current month.
     month_income = db.income_total(user_id, _months_ago(1))
 
-    # Three sections separated by a blank line. Dynamic text is escaped per
-    # section so the <b>/<code> tags below pass through untouched.
+    # Sections separated by a blank line: one expense table per month, then
+    # debts, then the cash summary. Dynamic text is escaped per section so the
+    # <b>/<code> tags below pass through untouched.
     sections = []
 
-    if summary:
-        totals = [f"{s['total'] / 100:.2f}" for s in summary]
+    # One table per month, oldest first; each product's share is over that
+    # month's own total.
+    for i in range(months, 0, -1):
+        start, end = _months_ago(i), _months_ago(i - 1)
+        summary = db.expense_summary(user_id, start, end)
+        if not summary:
+            continue
+        month_total = sum(s["total"] for s in summary)
+        totals = [
+            f"{s['total'] / 100:.0f} ({round(s['total'] / month_total * 100)}%)"
+            for s in summary
+        ]
         total_w = max(len("Total"), *(len(t) for t in totals))
         product_w = table_width(user_id) - total_w - 2
         expense_rows = [
@@ -504,7 +521,9 @@ async def balance(message: Message, command: CommandObject):
             for s, total in zip(summary, totals)
         ]
         widths = [product_w, total_w]
-        block = table_block("🧾", label, ("Product", "Total"), expense_rows, widths)
+        block = table_block(
+            "🧾", start.strftime("%B %Y"), ("Product", "Total"), expense_rows, widths
+        )
         sections.append(html.escape(block))
 
     if rows:

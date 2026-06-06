@@ -446,11 +446,11 @@ def recent_operations(user_id, limit=6, since=None):
     return operations
 
 
-def expense_summary(user_id, limit=6, since=None):
+def expense_summary(user_id, since=None, until=None):
     # The user's own share (each expense's price split among its consumers),
-    # grouped by product and ordered largest first. With `since` only expenses
-    # from that datetime on are counted; with `limit` only the top that many
-    # products. Payments are not expenses, so they are excluded.
+    # grouped by product and ordered largest first. `since`/`until` bound the
+    # window (since inclusive, until exclusive). Payments are not expenses, so
+    # they are excluded.
     query = """
         SELECT p.name AS product,
                SUM(e.price * 1.0 / counts.n) AS total,
@@ -467,10 +467,10 @@ def expense_summary(user_id, limit=6, since=None):
     if since is not None:
         query += " AND e.created_at >= ?"
         params.append(since.isoformat())
+    if until is not None:
+        query += " AND e.created_at < ?"
+        params.append(until.isoformat())
     query += " GROUP BY e.product_id ORDER BY total DESC"
-    if limit is not None:
-        query += " LIMIT ?"
-        params.append(limit)
     with _connect() as conn:
         return conn.execute(query, params).fetchall()
 
