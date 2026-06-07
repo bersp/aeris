@@ -143,7 +143,12 @@ HELP_TEXT = (
     "\n"
     "▸ <code>/tablewidth [number]</code>\n"
     "Resize the tables if they wrap: <code>/tablewidth 40</code>. No number restores "
-    "the default."
+    "the default.\n"
+    "\n"
+    "<b>Plots</b>\n"
+    "\n"
+    "▸ <code>/plot balance</code>\n"
+    "This month's spending as a chart."
 )
 
 
