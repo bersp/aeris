@@ -12,7 +12,11 @@
       color: var(--tg-theme-text-color, #000);
       font-family: -apple-system, system-ui, sans-serif;
     }
-    h1 { font-size: 1.1rem; font-weight: 600; margin: 16px; }
+    h1 {
+      font-size: 1.1rem; font-weight: 600;
+      margin: calc(16px + var(--tg-safe-area-inset-top, 0px)
+                   + var(--tg-content-safe-area-inset-top, 0px)) 16px 16px;
+    }
     .chart { height: 65vh; padding: 0 12px 16px; }
     #status {
       margin: 12px 16px; font-size: 0.8rem; white-space: pre-wrap;
@@ -38,7 +42,17 @@
 
     try {
       const tg = window.Telegram && window.Telegram.WebApp;
-      if (tg) { tg.ready(); tg.expand(); }
+      if (tg) {
+        tg.ready();
+        tg.expand();
+        // Go edge-to-edge so it feels like an app screen, not a web viewer.
+        // Falls back to the expanded sheet on clients without fullscreen.
+        try { if (tg.requestFullscreen) tg.requestFullscreen(); } catch (e) {}
+        // Match Telegram's own header and background to the page so the webview
+        // blends into the chat instead of looking like a separate window.
+        if (tg.setHeaderColor) tg.setHeaderColor("bg_color");
+        if (tg.setBackgroundColor) tg.setBackgroundColor("bg_color");
+      }
 
       // Telegram appends its own params to the fragment, so read our named one
       // (d=...) instead of the whole hash. URLSearchParams decodes it for us.
@@ -50,27 +64,63 @@
       if (typeof Chart === "undefined")
         throw new Error("Chart.js did not load (CDN blocked?)");
 
-      const accent = (tg && tg.themeParams && tg.themeParams.button_color) || "#2481cc";
+      const red = "#e53935";
+      const themeText = (tg && tg.themeParams && tg.themeParams.text_color) || "#000";
+      const datasets = [{
+        label: "Expenses",
+        data: (data.labels || []).map((d, i) => ({ x: d, y: (data.values || [])[i] })),
+        borderColor: red,
+        backgroundColor: red + "33",
+        fill: true,
+        tension: 0.25,
+        borderWidth: 4,
+        pointRadius: 4,
+        pointHoverRadius: 7,
+        pointHitRadius: 14,
+      }];
+      // A black dashed reference line at the month's total income.
+      if (data.income) {
+        datasets.push({
+          label: "Income",
+          data: [{ x: 0.5, y: data.income }, { x: 31.5, y: data.income }],
+          borderColor: themeText,
+          borderWidth: 2,
+          borderDash: [6, 6],
+          pointRadius: 0,
+          pointHitRadius: 0,
+          fill: false,
+        });
+      }
+
       new Chart(document.getElementById("chart"), {
         type: "line",
-        data: {
-          labels: data.labels || [],
-          datasets: [{
-            data: data.values || [],
-            borderColor: accent,
-            backgroundColor: accent + "33",
-            fill: true,
-            tension: 0.25,
-            pointRadius: 2,
-          }],
-        },
+        data: { datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              filter: (item) => item.datasetIndex === 0,
+              callbacks: {
+                title: (items) => "Day " + items[0].parsed.x,
+                label: (item) => "$" + item.parsed.y.toLocaleString(),
+              },
+            },
+          },
           scales: {
-            x: { title: { display: true, text: "Day of month" } },
-            y: { beginAtZero: true },
+            x: {
+              type: "linear",
+              min: 0.5,
+              max: 31.5,
+              title: { display: true, text: "Day of month" },
+              ticks: {
+                includeBounds: false,
+                callback: (v) => (Number.isInteger(v) ? v : ""),
+              },
+            },
+            y: {},
           },
         },
       });

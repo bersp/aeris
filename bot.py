@@ -688,7 +688,16 @@ async def plot(message: Message, command: CommandObject):
         values.append(round(running, 2))
         day += timedelta(days=1)
 
-    payload = {"title": start.strftime("%B %Y"), "labels": labels, "values": values}
+    # The month's total income, drawn as a reference line on the chart.
+    income_cents = sum(
+        row["total"] for row in db.income_summary(user_id, start, _months_ago(0))
+    )
+    payload = {
+        "title": start.strftime("%B %Y"),
+        "labels": labels,
+        "values": values,
+        "income": round(income_cents / 100, 2),
+    }
     # The data rides in the URL fragment as a named parameter (#d=...). Telegram
     # appends its own fragment parameters when opening the Mini App, so a named
     # one lets the page pick ours out and ignore the rest.
