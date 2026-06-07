@@ -99,9 +99,9 @@ HELP_TEXT = (
     "Money coming in, also <code>/inc</code>: <code>/inc salary 300000</code>. Dates "
     "work as in expenses.\n"
     "\n"
-    "▸ <code>/incomebalance [m [K]]</code>\n"
-    "Your income per month with a total, also <code>/incb</code>; takes a month "
-    "count like <code>/balance</code>.\n"
+    "▸ <code>/incomes [m [K]]</code>\n"
+    "Your income per month with a total; takes a month count like "
+    "<code>/balance</code>.\n"
     "\n"
     "<b>Aliases and products</b>\n"
     "\n"
@@ -125,8 +125,8 @@ HELP_TEXT = (
     "▸ <code>/ungroup &lt;name&gt;</code>\n"
     "Undo a group.\n"
     "\n"
-    "▸ <code>/grouplist</code>\n"
-    "Your groups and their products, also <code>/groupl</code>.\n"
+    "▸ <code>/groups</code>\n"
+    "Your groups and their products.\n"
     "\n"
     "<b>Display</b>\n"
     "\n"
@@ -645,9 +645,9 @@ async def balance(message: Message, command: CommandObject):
     await message.answer(f"<code>{body}</code>", parse_mode="HTML")
 
 
-@dp.message(Command("incomebalance", "incb"))
-@usage("/incb [m K]")
-async def income_balance(message: Message, command: CommandObject):
+@dp.message(Command("incomes"))
+@usage("/incomes [m K]")
+async def incomes(message: Message, command: CommandObject):
     user_id = message.from_user.id
     months = parse_balance_months(command.args)
     sections = []
@@ -759,8 +759,8 @@ async def ungroup(message: Message, command: CommandObject):
         await reply(message, f"No group {name}")
 
 
-@dp.message(Command("grouplist", "groupl"))
-async def grouplist(message: Message, command: CommandObject):
+@dp.message(Command("groups"))
+async def groups(message: Message, command: CommandObject):
     rows = db.list_groups(message.from_user.id)
     if not rows:
         await reply(message, "No groups.")
@@ -829,13 +829,13 @@ _COMMAND_GROUPS = (
     (detailed_list, ("detailedlist", "dlist")),
     (income, ("income", "inc")),
     (balance, ("balance",)),
-    (income_balance, ("incomebalance", "incb")),
+    (incomes, ("incomes",)),
     (alias, ("alias",)),
     (rmalias, ("rmalias",)),
     (products, ("products",)),
     (group, ("group",)),
     (ungroup, ("ungroup",)),
-    (grouplist, ("grouplist", "groupl")),
+    (groups, ("groups",)),
     (tablewidth, ("tablewidth",)),
 )
 TEXT_COMMANDS = {word: handler for handler, words in _COMMAND_GROUPS for word in words}
