@@ -1,14 +1,21 @@
 import asyncio
 import functools
 import html
+import json
 import logging
 import os
 import re
+import urllib.parse
 from datetime import datetime, timedelta
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 from dotenv import load_dotenv
 
 import db
@@ -16,6 +23,10 @@ import db
 load_dotenv()
 
 dp = Dispatcher()
+
+# Public HTTPS URL of the Mini App page (plot.html). A Telegram Web App button
+# only opens HTTPS URLs, so this is required for /plot.
+WEBAPP_URL = os.environ.get("WEBAPP_URL")
 
 # Commands available before registering.
 PUBLIC_COMMANDS = ("/start", "/help", "/register")
@@ -645,6 +656,49 @@ async def balance(message: Message, command: CommandObject):
     await message.answer(f"<code>{body}</code>", parse_mode="HTML")
 
 
+@dp.message(Command("plot"))
+@usage("/plot balance")
+async def plot(message: Message, command: CommandObject):
+    # Opens a Telegram Mini App with the user's cumulative spending over the
+    # current month. The data is computed here and handed to the static page
+    # (plot.html) through the URL fragment, so the page needs no backend and the
+    # numbers never reach the web server's logs.
+    if (command.args or "").strip() != "balance":
+        await reply(message, "Usage: /plot balance")
+        return
+    if not WEBAPP_URL:
+        await reply(message, "Plotting is not configured (set WEBAPP_URL).")
+        return
+
+    user_id = message.from_user.id
+    start = _months_ago(1)  # first day of the current month
+    totals = {
+        row["day"]: row["total"]
+        for row in db.daily_expense_totals(user_id, start)
+    }
+
+    # One running total per day from the 1st up to today, filling empty days so
+    # the line is continuous.
+    today = datetime.now().date()
+    labels, values, running = [], [], 0.0
+    day = start.date()
+    while day <= today:
+        running += totals.get(day.isoformat(), 0) / 100
+        labels.append(day.day)
+        values.append(round(running, 2))
+        day += timedelta(days=1)
+
+    payload = {"title": start.strftime("%B %Y"), "labels": labels, "values": values}
+    # The data rides in the URL fragment as a named parameter (#d=...). Telegram
+    # appends its own fragment parameters when opening the Mini App, so a named
+    # one lets the page pick ours out and ignore the rest.
+    url = f"{WEBAPP_URL}#d={urllib.parse.quote(json.dumps(payload))}"
+    button = InlineKeyboardButton(text="📈 Open chart", web_app=WebAppInfo(url=url))
+    markup = InlineKeyboardMarkup(inline_keyboard=[[button]])
+    # An inline-button message needs some text, so the month acts as a label.
+    await message.answer(payload["title"], reply_markup=markup)
+
+
 @dp.message(Command("incomes"))
 @usage("/incomes [m K]")
 async def incomes(message: Message, command: CommandObject):
@@ -829,6 +883,7 @@ _COMMAND_GROUPS = (
     (detailed_list, ("detailedlist", "dlist")),
     (income, ("income", "inc")),
     (balance, ("balance",)),
+    (plot, ("plot",)),
     (incomes, ("incomes",)),
     (alias, ("alias",)),
     (rmalias, ("rmalias",)),

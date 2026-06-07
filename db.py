@@ -533,6 +533,32 @@ def expense_summary(user_id, since=None, until=None):
         return conn.execute(query, params).fetchall()
 
 
+def daily_expense_totals(user_id, since=None, until=None):
+    # The user's own share of expenses summed per calendar day, oldest first.
+    # `since`/`until` bound the window (since inclusive, until exclusive). Days
+    # with no expense simply don't appear; the caller fills the gaps.
+    query = """
+        SELECT substr(e.created_at, 1, 10) AS day,
+               SUM(e.price * 1.0 / counts.n) AS total
+        FROM expenses e
+        JOIN consumers c ON c.expense_seq = e.seq
+        JOIN (
+            SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
+        ) counts ON counts.expense_seq = e.seq
+        WHERE c.user_id = ?
+    """
+    params = [user_id]
+    if since is not None:
+        query += " AND e.created_at >= ?"
+        params.append(since.isoformat())
+    if until is not None:
+        query += " AND e.created_at < ?"
+        params.append(until.isoformat())
+    query += " GROUP BY day ORDER BY day"
+    with _connect() as conn:
+        return conn.execute(query, params).fetchall()
+
+
 def income_summary(user_id, since=None, until=None):
     # The user's incomes grouped by description and ordered largest first.
     # `since`/`until` bound the window (since inclusive, until exclusive).
