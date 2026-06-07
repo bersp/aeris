@@ -274,8 +274,8 @@ async def record_expense(message, command, force):
 
     product_id = db.get_or_create_product(message.from_user.id, product)
 
-    # Own expense: paid and consumed by the sender.
-    if len(parts) < 4:
+    # Personal expense: paid and consumed by the sender.
+    if len(parts) < 3:
         user_id = message.from_user.id
         expense_id = db.add_expense(user_id, price, product_id, [user_id], when, description)
         name = db.get_name(user_id)
@@ -285,10 +285,16 @@ async def record_expense(message, command, force):
         )
         return
 
-    # Shared expense: "<payer> <beneficiaries>".
-    payer = parts[2]
-    spec = parts[3]
-    names = [payer] + ([] if spec == "all" else spec.split("/"))
+    # Shared expense. A single trailing field is the beneficiaries and the sender
+    # is the payer; two fields are "<payer> <beneficiaries>". Beneficiaries are
+    # comma-separated names, or "all" for every registered user.
+    if len(parts) < 4:
+        payer = db.get_name(message.from_user.id)
+        spec = parts[2]
+    else:
+        payer = parts[2]
+        spec = parts[3]
+    names = [payer] + ([] if spec == "all" else spec.split(","))
     missing = missing_users(names)
     if missing:
         await reply(message, f"Not registered: {', '.join(missing)}")
@@ -298,7 +304,7 @@ async def record_expense(message, command, force):
     if spec == "all":
         beneficiaries = db.all_users()
     else:
-        beneficiaries = [(db.get_user_id(name), name) for name in spec.split("/")]
+        beneficiaries = [(db.get_user_id(name), name) for name in spec.split(",")]
 
     consumer_ids = [user_id for user_id, name in beneficiaries]
     consumer_names = [name for user_id, name in beneficiaries]
