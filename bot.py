@@ -6,7 +6,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from aiogram import BaseMiddleware, Bot, Dispatcher
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from dotenv import load_dotenv
@@ -277,12 +277,12 @@ def parse_list_args(args, noun="operations", count_word="Last", default="n 6"):
 
 
 @dp.message(Command("start"))
-async def start(message: Message):
+async def start(message: Message, command: CommandObject = None):
     await message.answer(HELP_TEXT, parse_mode="HTML")
 
 
 @dp.message(Command("help"))
-async def help_command(message: Message):
+async def help_command(message: Message, command: CommandObject = None):
     await message.answer(HELP_TEXT, parse_mode="HTML")
 
 
@@ -764,6 +764,42 @@ async def pay(message: Message, command: CommandObject):
 
     text = payment_message(payer_name, payee_name, amount, payment_id)
     await broadcast(message, {message.from_user.id, payer_id, payee_id}, text)
+
+
+# First word -> handler, for the bare-text shortcut below.
+_COMMAND_GROUPS = (
+    (start, ("start",)),
+    (help_command, ("help",)),
+    (register, ("register",)),
+    (expense, ("expense", "exp")),
+    (force_expense, ("forceexpense", "fexp")),
+    (remove, ("remove", "rm")),
+    (list_operations, ("list",)),
+    (detailed_list, ("detailedlist", "dlist")),
+    (income, ("income", "inc")),
+    (balance, ("balance",)),
+    (income_balance, ("incomebalance", "incb")),
+    (alias, ("alias",)),
+    (rmalias, ("rmalias",)),
+    (products, ("products",)),
+    (tablewidth, ("tablewidth",)),
+)
+TEXT_COMMANDS = {word: handler for handler, words in _COMMAND_GROUPS for word in words}
+
+
+# Plain text with no leading slash runs /expense, unless its first word names a
+# command, in which case that command runs with the rest as its arguments.
+# Each command still produces its own usage hint on bad input.
+@dp.message(F.text & ~F.text.startswith("/"))
+async def text_shortcut(message: Message):
+    first, _, rest = message.text.partition(" ")
+    handler = TEXT_COMMANDS.get(first.lower())
+    if handler is not None:
+        command = CommandObject(command=first.lower(), args=rest.strip() or None)
+    else:
+        handler = expense
+        command = CommandObject(command="exp", args=message.text.strip() or None)
+    await handler(message, command=command)
 
 
 async def main():
