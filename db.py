@@ -48,6 +48,18 @@ def init_db():
             )
             """
         )
+        # A group folds several products into one line on the balance. A group is
+        # the set of rows sharing user_id and name; a product belongs to at most
+        # one group. Named "product_groups" because GROUP is a SQL keyword.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_groups (
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                product_id INTEGER NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS expenses (
@@ -261,6 +273,49 @@ def product_counts(user_id):
         ).fetchall()
 
 
+# --- groups ---
+
+
+def set_group(user_id, name, product_ids):
+    # Put the given products into the user's group `name`, creating it. A product
+    # belongs to at most one group, so any previous membership is replaced.
+    with _connect() as conn:
+        conn.executemany(
+            "DELETE FROM product_groups WHERE user_id = ? AND product_id = ?",
+            [(user_id, product_id) for product_id in product_ids],
+        )
+        conn.executemany(
+            "INSERT INTO product_groups (user_id, name, product_id) VALUES (?, ?, ?)",
+            [(user_id, name, product_id) for product_id in product_ids],
+        )
+
+
+def remove_group(user_id, name):
+    # Delete one of the user's groups (its products become ungrouped). Returns
+    # whether it existed.
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM product_groups WHERE user_id = ? AND name = ?", (user_id, name)
+        )
+        return cursor.rowcount > 0
+
+
+def list_groups(user_id):
+    # Each of the user's groups with its member product names.
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT g.name AS name, GROUP_CONCAT(p.name, ', ') AS products
+            FROM product_groups g
+            JOIN products p ON p.id = g.product_id
+            WHERE g.user_id = ?
+            GROUP BY g.name
+            ORDER BY g.name COLLATE NOCASE
+            """,
+            (user_id,),
+        ).fetchall()
+
+
 # --- operations ---
 
 
@@ -448,29 +503,32 @@ def recent_operations(user_id, limit=6, since=None):
 
 def expense_summary(user_id, since=None, until=None):
     # The user's own share (each expense's price split among its consumers),
-    # grouped by product and ordered largest first. `since`/`until` bound the
-    # window (since inclusive, until exclusive). Payments are not expenses, so
-    # they are excluded.
+    # ordered largest first. `since`/`until` bound the window (since inclusive,
+    # until exclusive). Payments are not expenses, so they are excluded. Products
+    # the user has put in a group collapse into a single row labelled with the
+    # group name; ungrouped products keep their own row.
     query = """
-        SELECT p.name AS product,
+        SELECT COALESCE(g.name, p.name) AS product,
                SUM(e.price * 1.0 / counts.n) AS total,
                MAX(e.description IS NOT NULL AND e.description != '') AS has_description
         FROM expenses e
         JOIN products p ON p.id = e.product_id
+        LEFT JOIN product_groups g
+            ON g.product_id = e.product_id AND g.user_id = ?
         JOIN consumers c ON c.expense_seq = e.seq
         JOIN (
             SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
         ) counts ON counts.expense_seq = e.seq
         WHERE c.user_id = ?
     """
-    params = [user_id]
+    params = [user_id, user_id]
     if since is not None:
         query += " AND e.created_at >= ?"
         params.append(since.isoformat())
     if until is not None:
         query += " AND e.created_at < ?"
         params.append(until.isoformat())
-    query += " GROUP BY e.product_id ORDER BY total DESC"
+    query += " GROUP BY COALESCE(g.name, p.name) ORDER BY total DESC"
     with _connect() as conn:
         return conn.execute(query, params).fetchall()
 

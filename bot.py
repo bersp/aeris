@@ -729,6 +729,50 @@ async def rmalias(message: Message, command: CommandObject):
         await reply(message, f"No alias {alias_name.lower()}")
 
 
+@dp.message(Command("group"))
+@usage("/group <name> <product,product,...>")
+async def group(message: Message, command: CommandObject):
+    # Fold the comma-separated products into the group `name`, collapsing them into
+    # a single line on the balance. Run again with the same name to add more.
+    parts = command.args.split()
+    user_id = message.from_user.id
+
+    name = parts[0]
+    products = parts[1].split(",")
+    product_ids = []
+    member_names = []
+    for product in products:
+        existing = resolve_product(user_id, product)
+        if existing is not None:
+            product = existing
+        product_ids.append(db.get_or_create_product(user_id, product))
+        member_names.append(product)
+    db.set_group(user_id, name, product_ids)
+    members = ", ".join(pretty_product(n) for n in member_names)
+    await reply(message, f"Group {name} -> {members}")
+
+
+@dp.message(Command("ungroup"))
+@usage("/ungroup <name>")
+async def ungroup(message: Message, command: CommandObject):
+    name = command.args.strip()
+    if db.remove_group(message.from_user.id, name):
+        await reply(message, f"Removed group {name}")
+    else:
+        await reply(message, f"No group {name}")
+
+
+@dp.message(Command("grouplist", "groupl"))
+async def grouplist(message: Message, command: CommandObject):
+    rows = db.list_groups(message.from_user.id)
+    if not rows:
+        await reply(message, "No groups.")
+        return
+    table_rows = [(r["name"], r["products"]) for r in rows]
+    block = table_block("👥", "Groups", ("Group", "Products"), table_rows)
+    await reply(message, block)
+
+
 @dp.message(Command("tablewidth"))
 async def tablewidth(message: Message, command: CommandObject):
     value = (command.args or "").strip()
@@ -792,6 +836,9 @@ _COMMAND_GROUPS = (
     (alias, ("alias",)),
     (rmalias, ("rmalias",)),
     (products, ("products",)),
+    (group, ("group",)),
+    (ungroup, ("ungroup",)),
+    (grouplist, ("grouplist", "groupl")),
     (tablewidth, ("tablewidth",)),
 )
 TEXT_COMMANDS = {word: handler for handler, words in _COMMAND_GROUPS for word in words}
