@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import html
 import logging
 import os
@@ -139,6 +140,25 @@ async def broadcast(message, user_ids, text):
         await message.bot.send_message(user_id, body, parse_mode="HTML")
 
 
+def usage(text):
+    # Wrap a command handler so malformed input replies with how to use the
+    # command instead of failing. Missing or wrongly-typed arguments surface as
+    # one of these errors while parsing (e.g. no price, a non-numeric amount, or
+    # no arguments at all), and are turned into a "Usage: ..." hint.
+    def decorator(handler):
+        @functools.wraps(handler)
+        async def wrapper(*args, **kwargs):
+            message = args[0] if args else kwargs["message"]
+            try:
+                return await handler(*args, **kwargs)
+            except (IndexError, ValueError, TypeError, AttributeError):
+                await reply(message, f"Usage: {text}")
+
+        return wrapper
+
+    return decorator
+
+
 class RequireRegistration(BaseMiddleware):
     async def __call__(self, handler, message: Message, data):
         command = message.text.split(maxsplit=1)[0] if message.text else ""
@@ -267,6 +287,7 @@ async def help_command(message: Message):
 
 
 @dp.message(Command("register"))
+@usage("/register <name>")
 async def register(message: Message, command: CommandObject):
     name = command.args.strip()
     user_id = message.from_user.id
@@ -279,6 +300,7 @@ async def register(message: Message, command: CommandObject):
 
 
 @dp.message(Command("expense", "exp"))
+@usage("/exp [date] <product> <price> [payer] [beneficiaries]")
 async def expense(message: Message, command: CommandObject):
     await record_expense(message, command, force=False)
 
@@ -287,6 +309,7 @@ async def expense(message: Message, command: CommandObject):
 # /expense applies, for short products that are legitimately similar to existing
 # ones.
 @dp.message(Command("forceexpense", "fexp"))
+@usage("/fexp [date] <product> <price> [payer] [beneficiaries]")
 async def force_expense(message: Message, command: CommandObject):
     await record_expense(message, command, force=True)
 
@@ -372,6 +395,7 @@ async def record_expense(message, command, force):
 
 
 @dp.message(Command("remove", "rm"))
+@usage("/rm <id suffix>")
 async def remove(message: Message, command: CommandObject):
     suffix = command.args.strip()
     removed = db.remove_operation(message.from_user.id, suffix)
@@ -477,6 +501,7 @@ def table_block(emoji, label, header, rows, widths=None):
 
 
 @dp.message(Command("list"))
+@usage("/list [n N | m K | d K]")
 async def list_operations(message: Message, command: CommandObject):
     limit, since, label = parse_list_args(command.args, default="m 1")
     operations = db.recent_operations(message.from_user.id, limit, since)
@@ -502,6 +527,7 @@ async def list_operations(message: Message, command: CommandObject):
 
 
 @dp.message(Command("detailedlist", "dlist"))
+@usage("/dlist [n N | m K | d K]")
 async def detailed_list(message: Message, command: CommandObject):
     limit, since, label = parse_list_args(command.args)
     operations = db.recent_operations(message.from_user.id, limit, since)
@@ -525,6 +551,7 @@ async def detailed_list(message: Message, command: CommandObject):
 
 
 @dp.message(Command("income", "inc"))
+@usage("/inc [date] <name> <amount>")
 async def income(message: Message, command: CommandObject):
     parts = command.args.split()
 
@@ -552,6 +579,7 @@ def parse_balance_months(args):
 
 
 @dp.message(Command("balance"))
+@usage("/balance [m K]")
 async def balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
     months = parse_balance_months(command.args)
@@ -611,6 +639,7 @@ async def balance(message: Message, command: CommandObject):
 
 
 @dp.message(Command("incomebalance", "incb"))
+@usage("/incb [m K]")
 async def income_balance(message: Message, command: CommandObject):
     user_id = message.from_user.id
     months = parse_balance_months(command.args)
@@ -664,6 +693,7 @@ async def products(message: Message, command: CommandObject):
 
 
 @dp.message(Command("alias"))
+@usage("/alias <alias> <product>")
 async def alias(message: Message, command: CommandObject):
     # "<alias> <product>": typing <alias> in /expense then records <product>.
     parts = command.args.split()
@@ -679,6 +709,7 @@ async def alias(message: Message, command: CommandObject):
 
 
 @dp.message(Command("rmalias"))
+@usage("/rmalias <alias>")
 async def rmalias(message: Message, command: CommandObject):
     alias_name = command.args.strip()
     user_id = message.from_user.id
@@ -707,6 +738,7 @@ async def tablewidth(message: Message, command: CommandObject):
 
 
 @dp.message(Command("pay"))
+@usage("/pay [payer] <payee> <amount>")
 async def pay(message: Message, command: CommandObject):
     parts = command.args.split()
     amount = parse_amount(parts[-1])
