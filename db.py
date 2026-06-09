@@ -373,26 +373,34 @@ def add_payment(payer_id, payee_id, amount):
 
 
 def remove_operation(user_id, suffix):
-    # Remove the user's expense or income whose id ends with `suffix`. When both
-    # an expense and an income match, the most recent one wins. Returns a dict
-    # tagged with "kind", or None.
+    # Remove the user's expense, income or payment whose id ends with `suffix`.
+    # When several match, the most recent one wins. Returns a dict tagged with
+    # "kind", or None.
     like = f"%{suffix}"
     with _connect() as conn:
         expense = conn.execute(
             "SELECT e.seq, e.id, e.created_at, e.price, p.name AS product, e.payer_id "
             "FROM expenses e JOIN products p ON p.id = e.product_id "
-            "WHERE e.payer_id = ? AND e.id LIKE ? ORDER BY e.seq DESC LIMIT 1",
-            (user_id, like),
+            "WHERE (e.payer_id = ? OR e.seq IN "
+            "(SELECT expense_seq FROM consumers WHERE user_id = ?)) "
+            "AND e.id LIKE ? ORDER BY e.seq DESC LIMIT 1",
+            (user_id, user_id, like),
         ).fetchone()
         income = conn.execute(
             "SELECT seq, id, created_at, amount, description "
             "FROM incomes WHERE user_id = ? AND id LIKE ? ORDER BY seq DESC LIMIT 1",
             (user_id, like),
         ).fetchone()
+        payment = conn.execute(
+            "SELECT seq, id, created_at, amount, payer_id, payee_id "
+            "FROM payments WHERE (payer_id = ? OR payee_id = ?) AND id LIKE ? "
+            "ORDER BY seq DESC LIMIT 1",
+            (user_id, user_id, like),
+        ).fetchone()
 
         candidates = [
             (kind, row)
-            for kind, row in (("expense", expense), ("income", income))
+            for kind, row in (("expense", expense), ("income", income), ("payment", payment))
             if row is not None
         ]
         if not candidates:
@@ -406,6 +414,24 @@ def remove_operation(user_id, suffix):
                 "id": row["id"],
                 "description": row["description"],
                 "amount": row["amount"],
+            }
+
+        if kind == "payment":
+            payer = conn.execute(
+                "SELECT name FROM users WHERE user_id = ?", (row["payer_id"],)
+            ).fetchone()["name"]
+            payee = conn.execute(
+                "SELECT name FROM users WHERE user_id = ?", (row["payee_id"],)
+            ).fetchone()["name"]
+            conn.execute("DELETE FROM payments WHERE seq = ?", (row["seq"],))
+            return {
+                "kind": "payment",
+                "id": row["id"],
+                "amount": row["amount"],
+                "payer_id": row["payer_id"],
+                "payee_id": row["payee_id"],
+                "payer": payer,
+                "payee": payee,
             }
 
         payer = conn.execute(

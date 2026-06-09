@@ -427,6 +427,13 @@ async def remove(message: Message, command: CommandObject):
             f"ID: {removed['id']}",
         )
         return
+    if removed["kind"] == "payment":
+        text = "Removed " + payment_message(
+            removed["payer"], removed["payee"], removed["amount"], removed["id"]
+        )
+        recipients = {message.from_user.id, removed["payer_id"], removed["payee_id"]}
+        await broadcast(message, recipients, text)
+        return
     text = operation_message(
         "Removed",
         removed["product"],
@@ -881,6 +888,7 @@ _COMMAND_GROUPS = (
     (expense, ("expense", "exp")),
     (force_expense, ("forceexpense", "fexp")),
     (remove, ("remove", "rm")),
+    (pay, ("pay",)),
     (list_operations, ("list",)),
     (detailed_list, ("detailedlist", "dlist")),
     (income, ("income", "inc")),
