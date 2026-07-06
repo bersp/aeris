@@ -15,6 +15,14 @@ def _connect():
     return conn
 
 
+def _add_column(conn, table, column, decl):
+    # Add a column to an existing table if it is not there yet, so schema changes
+    # apply to databases created before the column existed.
+    columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db():
     with _connect() as conn:
         conn.execute(
@@ -73,6 +81,10 @@ def init_db():
             )
             """
         )
+        # Who typed the command that created the expense (may differ from the
+        # payer). Added later, so backfilled as a nullable column; NULL rows fall
+        # back to the payer when displayed.
+        _add_column(conn, "expenses", "created_by", "INTEGER")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS consumers (
@@ -325,13 +337,16 @@ def _new_id(when):
     )
 
 
-def add_expense(payer_id, price, product_id, consumer_ids, when=None, description=None):
+def add_expense(
+    payer_id, price, product_id, consumer_ids, when=None, description=None, created_by=None
+):
     when = when or datetime.now()
     expense_id = _new_id(when)
     with _connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO expenses (id, payer_id, price, product_id, description, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO expenses "
+            "(id, payer_id, price, product_id, description, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 expense_id,
                 payer_id,
@@ -339,6 +354,7 @@ def add_expense(payer_id, price, product_id, consumer_ids, when=None, descriptio
                 product_id,
                 description,
                 when.isoformat(timespec="microseconds"),
+                created_by if created_by is not None else payer_id,
             ),
         )
         conn.executemany(
@@ -465,9 +481,10 @@ def recent_operations(user_id, limit=6, since=None):
         expenses = conn.execute(
             """
             SELECT e.seq, e.id, e.created_at, p.name AS product, e.description, e.price,
-                   u.name AS buyer
+                   u.name AS buyer, COALESCE(creator.name, u.name) AS added_by
             FROM expenses e
             JOIN users u ON u.user_id = e.payer_id
+            LEFT JOIN users creator ON creator.user_id = e.created_by
             JOIN products p ON p.id = e.product_id
             WHERE e.payer_id = ?
                OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
@@ -492,6 +509,7 @@ def recent_operations(user_id, limit=6, since=None):
                     "description": expense["description"],
                     "price": expense["price"],
                     "buyer": expense["buyer"],
+                    "added_by": expense["added_by"],
                     "consumers": consumers,
                 }
             )
@@ -514,6 +532,7 @@ def recent_operations(user_id, limit=6, since=None):
                     "description": None,
                     "price": payment["amount"],
                     "buyer": payment["buyer"],
+                    "added_by": None,
                     "consumers": [payment["payee"]],
                 }
             )

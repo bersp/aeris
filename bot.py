@@ -507,6 +507,24 @@ def payment_message(payer_name, payee_name, amount, payment_id):
     )
 
 
+def expense_detail(day, op_id, product, price, description, buyer, consumers, added_by=None):
+    # One expense rendered in the /detailedlist style: a header line with the day
+    # and id, the product and price, an optional note, and who paid for whom. When
+    # `added_by` is given it is appended to the participants line so the reader
+    # knows who logged it.
+    lines = [
+        f"▸ {day}   #{op_id}",
+        f"- {pretty_product(product)} — ${format_price(price)}",
+    ]
+    if description:
+        lines.append(f"- {description}")
+    line = f"- {buyer} → {', '.join(consumers)}"
+    if added_by:
+        line += f"  (by {added_by})"
+    lines.append(line)
+    return "\n".join(lines)
+
+
 def format_table(header, rows, widths=None):
     if widths is None:
         widths = [max(len(row[i]) for row in [header] + rows) for i in range(len(header))]
@@ -563,14 +581,18 @@ async def detailed_list(message: Message, command: CommandObject):
     for op in operations:
         created_at = op["created_at"]
         day = f"{created_at[8:10]}/{created_at[5:7]}/{created_at[2:4]}"
-        lines = [
-            f"▸ {day}   #{op['id']}",
-            f"- {pretty_product(op['product'])} — ${format_price(op['price'])}",
-        ]
-        if op["description"]:
-            lines.append(f"- {op['description']}")
-        lines.append(f"- {op['buyer']} → {', '.join(op['consumers'])}")
-        blocks.append("\n".join(lines))
+        blocks.append(
+            expense_detail(
+                day,
+                op["id"],
+                op["product"],
+                op["price"],
+                op["description"],
+                op["buyer"],
+                op["consumers"],
+                op["added_by"],
+            )
+        )
     body = "\n\n".join(blocks)
     await reply(message, f"📖 {label}\n\n{body}")
 
