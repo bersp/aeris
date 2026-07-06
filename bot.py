@@ -90,6 +90,10 @@ HELP_TEXT = (
     "<code>6d</code> six daily. <code>/sexp 6m 15/08 rent 5000</code> asks you to "
     "confirm rent on the 15th of each month for six months.\n"
     "\n"
+    "▸ <code>/scheduled</code>\n"
+    "Every upcoming payment, deferred expenses and installments alike, each "
+    "flagged as simple or installment.\n"
+    "\n"
     "<b>Removing an entry</b>\n"
     "\n"
     "▸ <code>/remove &lt;id suffix&gt;</code>\n"
@@ -651,14 +655,14 @@ def plan_label(item):
 
 def scheduled_detail(item, marker=None):
     # A scheduled expense in the expense_detail style, dated its due day. `marker`
-    # is appended to the header line (used by /scheduled to flag simple vs
-    # installment).
-    day = day_from_iso(item["due_date"])
+    # is appended after the id on the header line (used by /scheduled to flag
+    # simple vs installment).
+    op_id = item["id"]
     if marker:
-        day = f"{day}   {marker}"
+        op_id = f"{op_id}   {marker}"
     return expense_detail(
-        day, item["id"], item["product"], item["price"], item["description"],
-        item["payer"], item["consumers"], item["added_by"],
+        day_from_iso(item["due_date"]), op_id, item["product"], item["price"],
+        item["description"], item["payer"], item["consumers"], item["added_by"],
     )
 
 
@@ -766,6 +770,18 @@ async def detailed_list(message: Message, command: CommandObject):
         )
     body = "\n\n".join(blocks)
     await reply(message, f"📖 {label}\n\n{body}")
+
+
+@dp.message(Command("scheduled"))
+async def scheduled(message: Message, command: CommandObject = None):
+    # Every upcoming payment the user is part of, deferred expenses and
+    # installments alike, each flagged as "simple" or "installment K/N".
+    items = db.list_scheduled(message.from_user.id)
+    if not items:
+        await reply(message, "No scheduled payments.")
+        return
+    blocks = [scheduled_detail(item, plan_label(item)) for item in items]
+    await reply(message, "📅 Scheduled\n\n" + "\n\n".join(blocks))
 
 
 @dp.message(Command("income", "inc"))
@@ -1120,6 +1136,7 @@ _COMMAND_GROUPS = (
     (pay, ("pay",)),
     (list_operations, ("list",)),
     (detailed_list, ("detailedlist", "dlist")),
+    (scheduled, ("scheduled",)),
     (income, ("income", "inc")),
     (balance, ("balance",)),
     (incomes, ("incomes",)),
