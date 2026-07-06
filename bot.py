@@ -660,44 +660,55 @@ async def balance(message: Message, command: CommandObject):
     )
 
     body = "\n\n".join(sections)
-    markup = build_chart_markup(user_id)
+    markup = build_chart_markup(user_id, months)
     await message.answer(f"<code>{body}</code>", parse_mode="HTML", reply_markup=markup)
 
 
-def build_chart_markup(user_id):
-    # Builds the "Open chart" inline button for a user's cumulative spending over
-    # the current month. The data is computed here and handed to the static page
-    # (plot.html) through the URL fragment, so the page needs no backend and the
-    # numbers never reach the web server's logs. Returns None when plotting is
-    # not configured (no WEBAPP_URL).
+def build_chart_markup(user_id, months):
+    # Builds the "Open chart" inline button for a user's cumulative spending. By
+    # default it overlays the current month and the previous one for comparison;
+    # a month count (from "/balance m K") overlays that many months. The data is
+    # computed here and handed to the static page (plot.html) through the URL
+    # fragment, so the page needs no backend and the numbers never reach the web
+    # server's logs. Returns None when plotting is not configured (no WEBAPP_URL).
     if not WEBAPP_URL:
         return None
 
-    start = _months_ago(1)  # first day of the current month
-    totals = {
-        row["day"]: row["total"]
-        for row in db.daily_expense_totals(user_id, start)
-    }
-
-    # One running total per day from the 1st up to today, filling empty days so
-    # the line is continuous.
+    # Always at least two months, so the current one has something to compare
+    # against.
+    count = max(months, 2)
     today = datetime.now().date()
-    labels, values, running = [], [], 0.0
-    day = start.date()
-    while day <= today:
-        running += totals.get(day.isoformat(), 0) / 100
-        labels.append(day.day)
-        values.append(round(running, 2))
-        day += timedelta(days=1)
 
-    # The month's total income, drawn as a reference line on the chart.
+    # One cumulative daily series per month, most recent first. Each series is a
+    # running total per day from the 1st, empty days filled so the line stays
+    # continuous; the current month stops at today, past months run to month end.
+    series = []
+    for i in range(count):
+        start, end = _months_ago(i + 1), _months_ago(i)
+        totals = {
+            row["day"]: row["total"]
+            for row in db.daily_expense_totals(user_id, start, end)
+        }
+        last = today if i == 0 else (end.date() - timedelta(days=1))
+        labels, values, running = [], [], 0.0
+        day = start.date()
+        while day <= last:
+            running += totals.get(day.isoformat(), 0) / 100
+            labels.append(day.day)
+            values.append(round(running, 2))
+            day += timedelta(days=1)
+        series.append(
+            {"label": start.strftime("%B %Y"), "labels": labels, "values": values}
+        )
+
+    # The current month's total income, drawn as a reference line on the chart.
     income_cents = sum(
-        row["total"] for row in db.income_summary(user_id, start, _months_ago(0))
+        row["total"]
+        for row in db.income_summary(user_id, _months_ago(1), _months_ago(0))
     )
     payload = {
-        "title": start.strftime("%B %Y"),
-        "labels": labels,
-        "values": values,
+        "title": _months_ago(1).strftime("%B %Y"),
+        "series": series,
         "income": round(income_cents / 100, 2),
     }
     # The data rides in the URL fragment as a named parameter (#d=...). Telegram

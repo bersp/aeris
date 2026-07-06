@@ -65,23 +65,60 @@
         throw new Error("Chart.js did not load (CDN blocked?)");
 
       const red = "#e53935";
+      const gray = "#888888";
       const themeText = (tg && tg.themeParams && tg.themeParams.text_color) || "#000";
-      const datasets = [{
-        label: "Expenses",
-        data: (data.labels || []).map((d, i) => ({ x: d, y: (data.values || [])[i] })),
-        borderColor: red,
-        backgroundColor: red + "33",
-        fill: true,
-        tension: 0.25,
-        borderWidth: 4,
-        pointRadius: 4,
-        pointHoverRadius: 7,
-        pointHitRadius: 14,
-      }];
-      // A black dashed reference line at the month's total income.
+
+      const hexToRgba = (hex, a) => {
+        const n = parseInt(hex.slice(1), 16);
+        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+      };
+      const points = (s) =>
+        (s.labels || []).map((d, i) => ({ x: d, y: (s.values || [])[i] }));
+
+      const series = data.series || [];
+      const current = series[0];
+      const past = series.slice(1); // index 0 = most recent previous … oldest last
+      const datasets = [];
+
+      // Past months as faded context, drawn oldest first so more recent months
+      // sit on top. Recency sets the shade: the most recent previous month is the
+      // strongest gray, older months fade toward the surface. Lines only, no
+      // fill, to keep the overlay readable.
+      for (let i = past.length - 1; i >= 0; i--) {
+        const t = past.length > 1 ? i / (past.length - 1) : 0; // 0 recent … 1 old
+        datasets.push({
+          label: past[i].label,
+          data: points(past[i]),
+          borderColor: hexToRgba(gray, 0.9 - 0.5 * t),
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHitRadius: 0,
+          tension: 0.25,
+          fill: false,
+        });
+      }
+
+      // The current month is the hero: bold red with a light fill, drawn on top.
+      if (current) {
+        datasets.push({
+          label: current.label,
+          data: points(current),
+          borderColor: red,
+          backgroundColor: red + "33",
+          fill: true,
+          tension: 0.25,
+          borderWidth: 4,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          pointHitRadius: 14,
+        });
+      }
+
+      // A dashed reference line at the current month's total income.
       if (data.income) {
         datasets.push({
           label: "Income",
+          isIncome: true,
           data: [{ x: 0.5, y: data.income }, { x: 31.5, y: data.income }],
           borderColor: themeText,
           borderWidth: 2,
@@ -100,12 +137,24 @@
           maintainAspectRatio: false,
           interaction: { mode: "index", intersect: false },
           plugins: {
-            legend: { display: false },
+            legend: {
+              display: true,
+              position: "bottom",
+              labels: {
+                color: themeText,
+                usePointStyle: true,
+                boxWidth: 8,
+                boxHeight: 8,
+              },
+            },
             tooltip: {
-              filter: (item) => item.datasetIndex === 0,
+              // Drop the income reference line from the tooltip. When it is the
+              // only thing under the cursor the item list is empty, so guard the
+              // title against that instead of reading items[0] blindly.
+              filter: (item) => !item.dataset.isIncome,
               callbacks: {
-                title: (items) => "Day " + items[0].parsed.x,
-                label: (item) => "$" + item.parsed.y.toLocaleString(),
+                title: (items) => (items.length ? "Day " + items[0].parsed.x : ""),
+                label: (item) => item.dataset.label + ": $" + item.parsed.y.toLocaleString(),
               },
             },
           },
