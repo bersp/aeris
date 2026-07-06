@@ -395,7 +395,8 @@ def remove_operation(user_id, suffix):
     like = f"%{suffix}"
     with _connect() as conn:
         expense = conn.execute(
-            "SELECT e.seq, e.id, e.created_at, e.price, p.name AS product, e.payer_id "
+            "SELECT e.seq, e.id, e.created_at, e.price, e.description, e.created_by, "
+            "p.name AS product, e.payer_id "
             "FROM expenses e JOIN products p ON p.id = e.product_id "
             "WHERE (e.payer_id = ? OR e.seq IN "
             "(SELECT expense_seq FROM consumers WHERE user_id = ?)) "
@@ -453,6 +454,9 @@ def remove_operation(user_id, suffix):
         payer = conn.execute(
             "SELECT name FROM users WHERE user_id = ?", (row["payer_id"],)
         ).fetchone()["name"]
+        creator = conn.execute(
+            "SELECT name FROM users WHERE user_id = ?", (row["created_by"],)
+        ).fetchone()
         consumers = conn.execute(
             "SELECT c.user_id, u.name FROM consumers c JOIN users u ON u.user_id = c.user_id "
             "WHERE c.expense_seq = ?",
@@ -465,8 +469,10 @@ def remove_operation(user_id, suffix):
             "id": row["id"],
             "product": row["product"],
             "price": row["price"],
+            "description": row["description"],
             "payer_id": row["payer_id"],
             "payer": payer,
+            "added_by": creator["name"] if creator else payer,
             "consumer_ids": [c["user_id"] for c in consumers],
             "consumers": [c["name"] for c in consumers],
         }

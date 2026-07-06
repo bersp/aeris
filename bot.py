@@ -374,12 +374,14 @@ async def record_expense(message, command, force):
     # Personal expense: paid and consumed by the sender.
     if len(parts) < 3:
         user_id = message.from_user.id
-        expense_id = db.add_expense(user_id, price, product_id, [user_id], when, description)
-        name = db.get_name(user_id)
-        await reply(
-            message,
-            operation_message("Added", display_product, price, name, [name], expense_id),
+        expense_id = db.add_expense(
+            user_id, price, product_id, [user_id], when, description, created_by=user_id
         )
+        name = db.get_name(user_id)
+        detail = expense_detail(
+            day_str(when), expense_id, display_product, price, description, name, [name], name
+        )
+        await reply(message, f"Added Expense\n{detail}")
         return
 
     # Shared expense. A single trailing field is the beneficiaries and the sender
@@ -405,11 +407,17 @@ async def record_expense(message, command, force):
 
     consumer_ids = [user_id for user_id, name in beneficiaries]
     consumer_names = [name for user_id, name in beneficiaries]
-    expense_id = db.add_expense(payer_id, price, product_id, consumer_ids, when, description)
+    creator_id = message.from_user.id
+    expense_id = db.add_expense(
+        payer_id, price, product_id, consumer_ids, when, description, created_by=creator_id
+    )
 
-    text = operation_message("Added", display_product, price, payer, consumer_names, expense_id)
-    recipients = {message.from_user.id, payer_id} | set(consumer_ids)
-    await broadcast(message, recipients, text)
+    detail = expense_detail(
+        day_str(when), expense_id, display_product, price, description,
+        payer, consumer_names, db.get_name(creator_id),
+    )
+    recipients = {creator_id, payer_id} | set(consumer_ids)
+    await broadcast(message, recipients, f"Added Expense\n{detail}")
 
 
 @dp.message(Command("remove", "rm"))
@@ -421,29 +429,25 @@ async def remove(message: Message, command: CommandObject):
         await reply(message, "Nothing to remove.")
         return
     if removed["kind"] == "income":
-        await reply(
-            message,
-            f"Removed income {removed['description']} (${format_price(removed['amount'])})\n"
-            f"ID: {removed['id']}",
+        detail = income_detail(
+            day_from_id(removed["id"]), removed["id"], removed["description"], removed["amount"]
         )
+        await reply(message, f"Removed Income\n{detail}")
         return
     if removed["kind"] == "payment":
-        text = "Removed " + payment_message(
-            removed["payer"], removed["payee"], removed["amount"], removed["id"]
+        detail = payment_detail(
+            day_from_id(removed["id"]), removed["id"],
+            removed["payer"], removed["payee"], removed["amount"],
         )
         recipients = {message.from_user.id, removed["payer_id"], removed["payee_id"]}
-        await broadcast(message, recipients, text)
+        await broadcast(message, recipients, f"Removed Payment\n{detail}")
         return
-    text = operation_message(
-        "Removed",
-        removed["product"],
-        removed["price"],
-        removed["payer"],
-        removed["consumers"],
-        removed["id"],
+    detail = expense_detail(
+        day_from_id(removed["id"]), removed["id"], removed["product"], removed["price"],
+        removed["description"], removed["payer"], removed["consumers"], removed["added_by"],
     )
     recipients = {message.from_user.id, removed["payer_id"]} | set(removed["consumer_ids"])
-    await broadcast(message, recipients, text)
+    await broadcast(message, recipients, f"Removed Expense\n{detail}")
 
 
 def parse_amount(text):
@@ -491,22 +495,6 @@ def product_cell(name, description, width):
     return f"{name} ({description[:keep]}...)"
 
 
-def operation_message(verb, product, price, payer_name, consumer_names, op_id):
-    return (
-        f"{verb} {product} (${format_price(price)})\n"
-        f"Paid by {payer_name} for {', '.join(consumer_names)}\n"
-        f"ID: {op_id}"
-    )
-
-
-def payment_message(payer_name, payee_name, amount, payment_id):
-    return (
-        f"Payment (${format_price(amount)})\n"
-        f"From {payer_name} to {payee_name}\n"
-        f"ID: {payment_id}"
-    )
-
-
 def expense_detail(day, op_id, product, price, description, buyer, consumers, added_by=None):
     # One expense rendered in the /detailedlist style: a header line with the day
     # and id, the product and price, an optional note, and who paid for whom. When
@@ -523,6 +511,27 @@ def expense_detail(day, op_id, product, price, description, buyer, consumers, ad
         line += f"  (by {added_by})"
     lines.append(line)
     return "\n".join(lines)
+
+
+def income_detail(day, op_id, name, amount):
+    # An income in the same style as expense_detail: header line plus one line
+    # with the income name and amount.
+    return f"▸ {day}   #{op_id}\n- {pretty_product(name)} — ${format_price(amount)}"
+
+
+def payment_detail(day, op_id, payer_name, payee_name, amount):
+    # A payment in the same style: header line plus who paid whom and how much.
+    return f"▸ {day}   #{op_id}\n- {payer_name} → {payee_name} — ${format_price(amount)}"
+
+
+def day_str(when=None):
+    return (when or datetime.now()).strftime("%d/%m/%y")
+
+
+def day_from_id(op_id):
+    # The dd/mm/yy an operation was dated, read back from its id, which begins
+    # with the date as yymmdd (see db._new_id).
+    return f"{op_id[4:6]}/{op_id[2:4]}/{op_id[0:2]}"
 
 
 def format_table(header, rows, widths=None):
@@ -613,7 +622,8 @@ async def income(message: Message, command: CommandObject):
         return
     amount = parse_amount(parts[1])
     income_id = db.add_income(message.from_user.id, amount, name, when)
-    await reply(message, f"Income {name} (${format_price(amount)})\nID: {income_id}")
+    detail = income_detail(day_str(when), income_id, name, amount)
+    await reply(message, f"Added Income\n{detail}")
 
 
 def parse_balance_months(args):
@@ -909,7 +919,8 @@ async def pay(message: Message, command: CommandObject):
     payee_id = db.get_user_id(payee_name)
     payment_id = db.add_payment(payer_id, payee_id, amount)
 
-    text = payment_message(payer_name, payee_name, amount, payment_id)
+    detail = payment_detail(day_str(), payment_id, payer_name, payee_name, amount)
+    text = f"Added Payment\n{detail}"
     await broadcast(message, {message.from_user.id, payer_id, payee_id}, text)
 
 
