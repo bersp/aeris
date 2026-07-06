@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import functools
 import html
 import json
@@ -82,6 +83,12 @@ HELP_TEXT = (
     "A date after today defers an expense: nothing is recorded now, and on that "
     "day at 9am Aeris sends you its details with Add and Reject buttons. "
     "<code>/exp 20/12 gift 5000</code> asks you on the 20th.\n"
+    "\n"
+    "▸ <code>/scheduleexpense &lt;count&gt;&lt;m|d&gt; &lt;start date&gt; &lt;product&gt; &lt;price&gt; [payer] [beneficiaries]</code>\n"
+    "Pay in installments, also <code>/sexp</code>. The first field sets how many "
+    "charges and the gap between them: <code>6m</code> is six monthly, "
+    "<code>6d</code> six daily. <code>/sexp 6m 15/08 rent 5000</code> asks you to "
+    "confirm rent on the 15th of each month for six months.\n"
     "\n"
     "<b>Removing an entry</b>\n"
     "\n"
@@ -281,6 +288,15 @@ def _months_ago(months):
     return datetime(year, month + 1, 1)
 
 
+def _add_months(d, k):
+    # `d` shifted forward by `k` months, clamping the day to the target month's
+    # last day (e.g. 31 Jan + 1 month -> 28 Feb).
+    month_index = d.year * 12 + (d.month - 1) + k
+    year, month = divmod(month_index, 12)
+    last_day = calendar.monthrange(year, month + 1)[1]
+    return d.replace(year=year, month=month + 1, day=min(d.day, last_day))
+
+
 def parse_list_args(args, noun="operations", count_word="Last", default="n 6"):
     # Returns (limit, since, label): how many of the latest operations to show or
     # a datetime from which to keep them, plus a human label for the window.
@@ -339,8 +355,60 @@ async def force_expense(message: Message, command: CommandObject):
     await record_expense(message, command, force=True)
 
 
-async def record_expense(message, command, force):
-    args = command.args
+@dp.message(Command("scheduleexpense", "sexp"))
+@usage("/sexp <count><m|d> <start date> <product> <price> [payer] [beneficiaries]")
+async def schedule_expense(message: Message, command: CommandObject):
+    # Pay something in installments: <count><m|d> sets how many charges and the
+    # gap between them (months or days); the first lands on the start date and
+    # each installment is confirmed on its own day like a deferred expense.
+    head, rest = command.args.split(maxsplit=1)
+    plan = re.fullmatch(r"(\d+)([md])", head)
+    count, unit = int(plan.group(1)), plan.group(2)
+    if count < 1:
+        raise ValueError
+
+    try:
+        e = parse_expense_input(message.from_user.id, rest, force=False)
+    except InputError as error:
+        await reply(message, str(error))
+        return
+    if e["when"] is None:
+        raise ValueError  # a start date is required
+    start = e["when"].date()
+
+    plan_id = db._new_id(datetime.combine(start, datetime.min.time()))
+    dues = [
+        _add_months(start, i) if unit == "m" else start + timedelta(days=i)
+        for i in range(count)
+    ]
+    for i, due in enumerate(dues):
+        db.add_scheduled_expense(
+            message.from_user.id, e["payer_id"], e["price"], e["product_id"],
+            e["consumer_ids"], due.isoformat(), e["description"],
+            plan_id=plan_id, plan_index=i + 1, plan_total=count,
+        )
+
+    lines = [
+        f"Scheduled {count} installments of "
+        f"{pretty_product(e['display_product'])} (${format_price(e['price'])} each)",
+        f"Paid by {e['payer_name']} for {', '.join(e['consumer_names'])}",
+    ]
+    for i, due in enumerate(dues):
+        lines.append(f"▸ {day_from_iso(due.isoformat())}   {i + 1}/{count}")
+    await reply(message, "\n".join(lines))
+
+
+class InputError(Exception):
+    # A user-facing complaint that already reads well (e.g. "Not registered: X"),
+    # as opposed to the malformed-input errors that /usage turns into a hint.
+    pass
+
+
+def parse_expense_input(sender_id, args, force):
+    # Parse the shared "[date] <product[(note)]> <price> [payer] [beneficiaries]"
+    # form used by /expense and /scheduleexpense, resolve the product and the
+    # participants, and return them as a dict. Raises InputError for problems that
+    # have their own message; lets malformed input raise so /usage handles it.
 
     # Optional description in parentheses attached to the product, e.g.
     # "others(some note)". It may contain spaces, so pull it out before splitting.
@@ -357,8 +425,7 @@ async def record_expense(message, command, force):
 
     product = parts[0]
     if is_number(product):
-        await reply(message, "Product cannot be a number.")
-        return
+        raise InputError("Product cannot be a number.")
     price = parse_amount(parts[1])
 
     # /expense collapses the product to the sender's existing spelling (same name
@@ -367,29 +434,29 @@ async def record_expense(message, command, force):
     # Either way a product not seen before is flagged with a trailing "*" in the
     # confirmation (display only, never stored).
     if force:
-        is_new = product not in db.user_products(message.from_user.id)
+        is_new = product not in db.user_products(sender_id)
         display_product = f"{product}*" if is_new else product
     else:
-        existing = resolve_product(message.from_user.id, product)
+        existing = resolve_product(sender_id, product)
         is_new = existing is None
         if existing is not None:
             product = existing
         display_product = f"{product}*" if is_new else product
 
-    product_id = db.get_or_create_product(message.from_user.id, product)
+    product_id = db.get_or_create_product(sender_id, product)
 
     # Work out who pays and who consumes. Personal expense (no third field): the
     # sender pays and consumes. Shared: a single trailing field is the
     # beneficiaries with the sender as payer; two fields are "<payer>
     # <beneficiaries>". Beneficiaries are comma-separated names, or "all".
     if len(parts) < 3:
-        payer_id = message.from_user.id
+        payer_id = sender_id
         payer_name = db.get_name(payer_id)
         consumer_ids = [payer_id]
         consumer_names = [payer_name]
     else:
         if len(parts) < 4:
-            payer_name = db.get_name(message.from_user.id)
+            payer_name = db.get_name(sender_id)
             spec = parts[2]
         else:
             payer_name = parts[2]
@@ -397,8 +464,7 @@ async def record_expense(message, command, force):
         names = [payer_name] + ([] if spec == "all" else spec.split(","))
         missing = missing_users(names)
         if missing:
-            await reply(message, f"Not registered: {', '.join(missing)}")
-            return
+            raise InputError(f"Not registered: {', '.join(missing)}")
         payer_id = db.get_user_id(payer_name)
         if spec == "all":
             beneficiaries = db.all_users()
@@ -407,6 +473,27 @@ async def record_expense(message, command, force):
         consumer_ids = [uid for uid, name in beneficiaries]
         consumer_names = [name for uid, name in beneficiaries]
 
+    return {
+        "when": when,
+        "description": description,
+        "product_id": product_id,
+        "display_product": display_product,
+        "price": price,
+        "payer_id": payer_id,
+        "payer_name": payer_name,
+        "consumer_ids": consumer_ids,
+        "consumer_names": consumer_names,
+    }
+
+
+async def record_expense(message, command, force):
+    try:
+        e = parse_expense_input(message.from_user.id, command.args, force)
+    except InputError as error:
+        await reply(message, str(error))
+        return
+
+    when = e["when"]
     creator_id = message.from_user.id
     creator_name = db.get_name(creator_id)
 
@@ -414,24 +501,25 @@ async def record_expense(message, command, force):
     # its day (see run_scheduler / the sched: callback) instead of recorded now.
     if when is not None and when.date() > datetime.now().date():
         scheduled_id = db.add_scheduled_expense(
-            creator_id, payer_id, price, product_id, consumer_ids,
-            when.date().isoformat(), description,
+            creator_id, e["payer_id"], e["price"], e["product_id"], e["consumer_ids"],
+            when.date().isoformat(), e["description"],
         )
         detail = expense_detail(
-            day_str(when), scheduled_id, display_product, price, description,
-            payer_name, consumer_names, creator_name,
+            day_str(when), scheduled_id, e["display_product"], e["price"], e["description"],
+            e["payer_name"], e["consumer_names"], creator_name,
         )
         await reply(message, f"Scheduled Expense\n{detail}")
         return
 
     expense_id = db.add_expense(
-        payer_id, price, product_id, consumer_ids, when, description, created_by=creator_id
+        e["payer_id"], e["price"], e["product_id"], e["consumer_ids"], when,
+        e["description"], created_by=creator_id,
     )
     detail = expense_detail(
-        day_str(when), expense_id, display_product, price, description,
-        payer_name, consumer_names, creator_name,
+        day_str(when), expense_id, e["display_product"], e["price"], e["description"],
+        e["payer_name"], e["consumer_names"], creator_name,
     )
-    recipients = {creator_id, payer_id} | set(consumer_ids)
+    recipients = {creator_id, e["payer_id"]} | set(e["consumer_ids"])
     await broadcast(message, recipients, f"Added Expense\n{detail}")
 
 
@@ -1027,6 +1115,7 @@ _COMMAND_GROUPS = (
     (register, ("register",)),
     (expense, ("expense", "exp")),
     (force_expense, ("forceexpense", "fexp")),
+    (schedule_expense, ("scheduleexpense", "sexp")),
     (remove, ("remove", "rm")),
     (pay, ("pay",)),
     (list_operations, ("list",)),
