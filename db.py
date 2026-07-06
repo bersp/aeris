@@ -128,6 +128,37 @@ def init_db():
             )
             """
         )
+        # An expense scheduled for a future day. On its due_date at 09:00 the
+        # creator is prompted (Add/Reject) and, if confirmed, it becomes a real
+        # expense. A simple deferred expense has plan_id NULL; installments share
+        # a plan_id and carry their index/total (e.g. "2/6").
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scheduled_expenses (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                payer_id INTEGER NOT NULL,
+                price INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                description TEXT,
+                due_date TEXT NOT NULL,
+                plan_id TEXT,
+                plan_index INTEGER,
+                plan_total INTEGER,
+                notified INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scheduled_consumers (
+                scheduled_seq INTEGER NOT NULL,
+                user_id INTEGER NOT NULL
+            )
+            """
+        )
 
 
 # --- users ---
@@ -386,6 +417,122 @@ def add_payment(payer_id, payee_id, amount):
             (payment_id, payer_id, payee_id, amount, when.isoformat(timespec="microseconds")),
         )
     return payment_id
+
+
+# --- scheduled expenses ---
+
+
+def add_scheduled_expense(
+    created_by, payer_id, price, product_id, consumer_ids, due_date,
+    description=None, plan_id=None, plan_index=None, plan_total=None,
+):
+    # Store an expense to be confirmed on `due_date` (a YYYY-MM-DD string). The
+    # id embeds the due date so it reads like a real expense id.
+    scheduled_id = _new_id(datetime.fromisoformat(due_date))
+    with _connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO scheduled_expenses "
+            "(id, created_by, payer_id, price, product_id, description, due_date, "
+            " plan_id, plan_index, plan_total, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                scheduled_id, created_by, payer_id, price, product_id, description,
+                due_date, plan_id, plan_index, plan_total,
+                datetime.now().isoformat(timespec="microseconds"),
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO scheduled_consumers (scheduled_seq, user_id) VALUES (?, ?)",
+            [(cursor.lastrowid, uid) for uid in consumer_ids],
+        )
+    return scheduled_id
+
+
+def _scheduled_dict(conn, row):
+    # Flesh out a scheduled_expenses row with product/payer/creator names and its
+    # consumers, in the shape the bot renders and records from.
+    product = conn.execute(
+        "SELECT name FROM products WHERE id = ?", (row["product_id"],)
+    ).fetchone()["name"]
+    payer = conn.execute(
+        "SELECT name FROM users WHERE user_id = ?", (row["payer_id"],)
+    ).fetchone()["name"]
+    creator = conn.execute(
+        "SELECT name FROM users WHERE user_id = ?", (row["created_by"],)
+    ).fetchone()
+    consumers = conn.execute(
+        "SELECT c.user_id, u.name FROM scheduled_consumers c "
+        "JOIN users u ON u.user_id = c.user_id WHERE c.scheduled_seq = ?",
+        (row["seq"],),
+    ).fetchall()
+    return {
+        "seq": row["seq"],
+        "id": row["id"],
+        "created_by": row["created_by"],
+        "payer_id": row["payer_id"],
+        "price": row["price"],
+        "product_id": row["product_id"],
+        "product": product,
+        "description": row["description"],
+        "due_date": row["due_date"],
+        "plan_id": row["plan_id"],
+        "plan_index": row["plan_index"],
+        "plan_total": row["plan_total"],
+        "payer": payer,
+        "added_by": creator["name"] if creator else payer,
+        "consumer_ids": [c["user_id"] for c in consumers],
+        "consumers": [c["name"] for c in consumers],
+    }
+
+
+def unnotified_scheduled(max_due_date):
+    # Scheduled expenses due on or before `max_due_date` (YYYY-MM-DD) that have
+    # not been announced yet, oldest first.
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_expenses WHERE notified = 0 AND due_date <= ? "
+            "ORDER BY due_date, seq",
+            (max_due_date,),
+        ).fetchall()
+        return [_scheduled_dict(conn, row) for row in rows]
+
+
+def mark_scheduled_notified(seq):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE scheduled_expenses SET notified = 1 WHERE seq = ?", (seq,)
+        )
+
+
+def pop_scheduled(scheduled_id):
+    # Read a scheduled expense by id and delete it (with its consumers). Returns
+    # its dict, or None if it was already resolved. Deleting up front keeps a
+    # double Add/Reject tap from recording it twice.
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM scheduled_expenses WHERE id = ?", (scheduled_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        item = _scheduled_dict(conn, row)
+        conn.execute(
+            "DELETE FROM scheduled_consumers WHERE scheduled_seq = ?", (row["seq"],)
+        )
+        conn.execute("DELETE FROM scheduled_expenses WHERE seq = ?", (row["seq"],))
+        return item
+
+
+def list_scheduled(user_id):
+    # Pending scheduled expenses the user takes part in (as creator, payer or
+    # consumer), oldest due first.
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_expenses WHERE created_by = ? OR payer_id = ? "
+            "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?) "
+            "ORDER BY due_date, seq",
+            (user_id, user_id, user_id),
+        ).fetchall()
+        return [_scheduled_dict(conn, row) for row in rows]
 
 
 def remove_operation(user_id, suffix):

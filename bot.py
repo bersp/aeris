@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
+    CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -75,6 +76,12 @@ HELP_TEXT = (
     "<code>all</code> means everyone registered: "
     "<code>/exp supermarket 20000 all</code>. Another payer goes first: "
     "<code>/exp pizza 8000 Bob Alice,Carol</code>.\n"
+    "\n"
+    "<b>Scheduling</b>\n"
+    "\n"
+    "A date after today defers an expense: nothing is recorded now, and on that "
+    "day at 9am Aeris sends you its details with Add and Reject buttons. "
+    "<code>/exp 20/12 gift 5000</code> asks you on the 20th.\n"
     "\n"
     "<b>Removing an entry</b>\n"
     "\n"
@@ -371,50 +378,58 @@ async def record_expense(message, command, force):
 
     product_id = db.get_or_create_product(message.from_user.id, product)
 
-    # Personal expense: paid and consumed by the sender.
+    # Work out who pays and who consumes. Personal expense (no third field): the
+    # sender pays and consumes. Shared: a single trailing field is the
+    # beneficiaries with the sender as payer; two fields are "<payer>
+    # <beneficiaries>". Beneficiaries are comma-separated names, or "all".
     if len(parts) < 3:
-        user_id = message.from_user.id
-        expense_id = db.add_expense(
-            user_id, price, product_id, [user_id], when, description, created_by=user_id
-        )
-        name = db.get_name(user_id)
-        detail = expense_detail(
-            day_str(when), expense_id, display_product, price, description, name, [name], name
-        )
-        await reply(message, f"Added Expense\n{detail}")
-        return
-
-    # Shared expense. A single trailing field is the beneficiaries and the sender
-    # is the payer; two fields are "<payer> <beneficiaries>". Beneficiaries are
-    # comma-separated names, or "all" for every registered user.
-    if len(parts) < 4:
-        payer = db.get_name(message.from_user.id)
-        spec = parts[2]
+        payer_id = message.from_user.id
+        payer_name = db.get_name(payer_id)
+        consumer_ids = [payer_id]
+        consumer_names = [payer_name]
     else:
-        payer = parts[2]
-        spec = parts[3]
-    names = [payer] + ([] if spec == "all" else spec.split(","))
-    missing = missing_users(names)
-    if missing:
-        await reply(message, f"Not registered: {', '.join(missing)}")
-        return
+        if len(parts) < 4:
+            payer_name = db.get_name(message.from_user.id)
+            spec = parts[2]
+        else:
+            payer_name = parts[2]
+            spec = parts[3]
+        names = [payer_name] + ([] if spec == "all" else spec.split(","))
+        missing = missing_users(names)
+        if missing:
+            await reply(message, f"Not registered: {', '.join(missing)}")
+            return
+        payer_id = db.get_user_id(payer_name)
+        if spec == "all":
+            beneficiaries = db.all_users()
+        else:
+            beneficiaries = [(db.get_user_id(name), name) for name in spec.split(",")]
+        consumer_ids = [uid for uid, name in beneficiaries]
+        consumer_names = [name for uid, name in beneficiaries]
 
-    payer_id = db.get_user_id(payer)
-    if spec == "all":
-        beneficiaries = db.all_users()
-    else:
-        beneficiaries = [(db.get_user_id(name), name) for name in spec.split(",")]
-
-    consumer_ids = [user_id for user_id, name in beneficiaries]
-    consumer_names = [name for user_id, name in beneficiaries]
     creator_id = message.from_user.id
+    creator_name = db.get_name(creator_id)
+
+    # A future date defers the expense: it is stored as scheduled and confirmed on
+    # its day (see run_scheduler / the sched: callback) instead of recorded now.
+    if when is not None and when.date() > datetime.now().date():
+        scheduled_id = db.add_scheduled_expense(
+            creator_id, payer_id, price, product_id, consumer_ids,
+            when.date().isoformat(), description,
+        )
+        detail = expense_detail(
+            day_str(when), scheduled_id, display_product, price, description,
+            payer_name, consumer_names, creator_name,
+        )
+        await reply(message, f"Scheduled Expense\n{detail}")
+        return
+
     expense_id = db.add_expense(
         payer_id, price, product_id, consumer_ids, when, description, created_by=creator_id
     )
-
     detail = expense_detail(
         day_str(when), expense_id, display_product, price, description,
-        payer, consumer_names, db.get_name(creator_id),
+        payer_name, consumer_names, creator_name,
     )
     recipients = {creator_id, payer_id} | set(consumer_ids)
     await broadcast(message, recipients, f"Added Expense\n{detail}")
@@ -532,6 +547,65 @@ def day_from_id(op_id):
     # The dd/mm/yy an operation was dated, read back from its id, which begins
     # with the date as yymmdd (see db._new_id).
     return f"{op_id[4:6]}/{op_id[2:4]}/{op_id[0:2]}"
+
+
+def day_from_iso(iso_date):
+    # dd/mm/yy from a YYYY-MM-DD date string (a scheduled expense's due_date).
+    return f"{iso_date[8:10]}/{iso_date[5:7]}/{iso_date[2:4]}"
+
+
+def plan_label(item):
+    # "installment K/N" for an installment plan, "simple" for a one-off deferral.
+    if item["plan_id"]:
+        return f"installment {item['plan_index']}/{item['plan_total']}"
+    return "simple"
+
+
+def scheduled_detail(item, marker=None):
+    # A scheduled expense in the expense_detail style, dated its due day. `marker`
+    # is appended to the header line (used by /scheduled to flag simple vs
+    # installment).
+    day = day_from_iso(item["due_date"])
+    if marker:
+        day = f"{day}   {marker}"
+    return expense_detail(
+        day, item["id"], item["product"], item["price"], item["description"],
+        item["payer"], item["consumers"], item["added_by"],
+    )
+
+
+def scheduled_prompt(item):
+    # The 9am message asking the creator to confirm a due scheduled expense, with
+    # Add/Reject inline buttons carrying the scheduled id.
+    if item["plan_id"]:
+        header = f"Add installment {item['plan_index']}/{item['plan_total']}?"
+    else:
+        header = "Add this expense?"
+    text = f"<code>{html.escape(header + chr(10) + scheduled_detail(item))}</code>"
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="Add", callback_data=f"sched:add:{item['id']}"),
+            InlineKeyboardButton(text="Reject", callback_data=f"sched:reject:{item['id']}"),
+        ]]
+    )
+    return text, markup
+
+
+def confirm_scheduled(item):
+    # Turn a due scheduled expense into a real one, dated its due day. Returns the
+    # confirmation text and the set of participants to notify.
+    due = datetime.fromisoformat(item["due_date"])
+    when = datetime.combine(due.date(), datetime.now().time())
+    expense_id = db.add_expense(
+        item["payer_id"], item["price"], item["product_id"], item["consumer_ids"],
+        when, item["description"], created_by=item["created_by"],
+    )
+    detail = expense_detail(
+        day_str(when), expense_id, item["product"], item["price"], item["description"],
+        item["payer"], item["consumers"], item["added_by"],
+    )
+    recipients = {item["created_by"], item["payer_id"]} | set(item["consumer_ids"])
+    return f"Added Expense\n{detail}", recipients
 
 
 def format_table(header, rows, widths=None):
@@ -924,6 +998,28 @@ async def pay(message: Message, command: CommandObject):
     await broadcast(message, {message.from_user.id, payer_id, payee_id}, text)
 
 
+@dp.callback_query(F.data.startswith("sched:"))
+async def on_scheduled_action(query: CallbackQuery):
+    # Handle the Add/Reject buttons on a due scheduled expense. The prompt goes
+    # only to the creator, so this only fires for them. Popping the row first
+    # keeps a double tap from recording it twice.
+    _, action, scheduled_id = query.data.split(":", 2)
+    item = db.pop_scheduled(scheduled_id)
+    if item is None:
+        await query.answer("Already handled.")
+        return
+    if action == "add":
+        text, recipients = confirm_scheduled(item)
+        body = f"<code>{html.escape(text)}</code>"
+        await query.message.edit_text(body, parse_mode="HTML")
+        for user_id in recipients - {query.from_user.id}:
+            await query.bot.send_message(user_id, body, parse_mode="HTML")
+    else:
+        text = "Rejected Expense\n" + scheduled_detail(item)
+        await query.message.edit_text(f"<code>{html.escape(text)}</code>", parse_mode="HTML")
+    await query.answer()
+
+
 # First word -> handler, for the bare-text shortcut below.
 _COMMAND_GROUPS = (
     (start, ("start",)),
@@ -964,10 +1060,35 @@ async def text_shortcut(message: Message):
     await handler(message, command=command)
 
 
+async def dispatch_due_scheduled(bot):
+    # Prompt the creator of every scheduled expense whose day has come. An item is
+    # due from 09:00 on its due_date; before 9am today's items wait, but any item
+    # from a past day (e.g. the bot was down) is sent right away.
+    now = datetime.now()
+    max_due = now.date() if now.hour >= 9 else now.date() - timedelta(days=1)
+    for item in db.unnotified_scheduled(max_due.isoformat()):
+        text, markup = scheduled_prompt(item)
+        await bot.send_message(
+            item["created_by"], text, parse_mode="HTML", reply_markup=markup
+        )
+        db.mark_scheduled_notified(item["seq"])
+
+
+async def run_scheduler(bot):
+    # Background loop that fires due scheduled-expense prompts once a minute.
+    while True:
+        try:
+            await dispatch_due_scheduled(bot)
+        except Exception:
+            logging.exception("scheduler error")
+        await asyncio.sleep(60)
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
     bot = Bot(token=os.environ["BOT_TOKEN"])
+    asyncio.create_task(run_scheduler(bot))
     await dp.start_polling(bot)
 
 
