@@ -611,6 +611,29 @@ def table_block(emoji, label, header, rows, widths=None):
     return f"{emoji} {label}\n\n{table}\n{'-' * width}"
 
 
+def month_block(user_id, emoji, label, name_header, summary, name_key):
+    # One month of an expense or income summary: a table with each entry's total
+    # and its share of the month, closed by the month total. `summary` rows carry
+    # their name under `name_key` and their amount under "total".
+    month_total = sum(s["total"] for s in summary)
+    amounts = [f"{s['total'] / 100:.0f}" for s in summary]
+    parens = [f"({round(s['total'] / month_total * 100)}%)" for s in summary]
+    amount_w = max(len(a) for a in amounts)
+    paren_w = max(len(p) for p in parens)
+    totals = [
+        f"{amount:>{amount_w}} {paren:>{paren_w}}"
+        for amount, paren in zip(amounts, parens)
+    ]
+    total_w = max(len("Total"), *(len(t) for t in totals))
+    name_w = table_width(user_id) - total_w - 2
+    rows = [
+        (product_cell(s[name_key], None, name_w), total)
+        for s, total in zip(summary, totals)
+    ]
+    block = table_block(emoji, label, (name_header, "Total"), rows, [name_w, total_w])
+    return f"{block}\n\nTotal: ${format_price(month_total)}"
+
+
 @dp.message(Command("list"))
 @usage("/list [n N | m K | d K]")
 async def list_operations(message: Message, command: CommandObject):
@@ -743,24 +766,8 @@ async def balance(message: Message, command: CommandObject):
         summary = db.expense_summary(user_id, start, end)
         if not summary:
             continue
-        month_total = sum(s["total"] for s in summary)
-        amounts = [f"{s['total'] / 100:.0f}" for s in summary]
-        parens = [f"({round(s['total'] / month_total * 100)}%)" for s in summary]
-        amount_w = max(len(a) for a in amounts)
-        paren_w = max(len(p) for p in parens)
-        totals = [
-            f"{amount:>{amount_w}} {paren:>{paren_w}}"
-            for amount, paren in zip(amounts, parens)
-        ]
-        total_w = max(len("Total"), *(len(t) for t in totals))
-        product_w = table_width(user_id) - total_w - 2
-        expense_rows = [
-            (product_cell(s["product"], None, product_w), total)
-            for s, total in zip(summary, totals)
-        ]
-        widths = [product_w, total_w]
-        block = table_block(
-            "🧾", start.strftime("%B %Y"), ("Product", "Total"), expense_rows, widths
+        block = month_block(
+            user_id, "🧾", start.strftime("%B %Y"), "Product", summary, "product"
         )
         sections.append(html.escape(block))
 
@@ -768,14 +775,14 @@ async def balance(message: Message, command: CommandObject):
         debts = []
         for r in rows:
             if r["net"] > 0:
-                debts.append(f"🤝 {r['name']} owes you ${r['net'] / 100:.2f}")
+                debts.append(f"🤝 {r['name']} owes you ${format_price(r['net'])}")
             else:
-                debts.append(f"🤝 You owe {r['name']} ${-r['net'] / 100:.2f}")
+                debts.append(f"🤝 You owe {r['name']} ${format_price(-r['net'])}")
         sections.append(html.escape("\n".join(debts)))
 
     sections.append(
-        f"<b>{html.escape(f'💵 Cash: ${cash / 100:.2f}')}</b>\n"
-        f"<b>{html.escape(f'💰 After debts: ${(cash + net) / 100:.2f}')}</b>"
+        f"<b>{html.escape(f'💵 Cash: ${format_price(cash)}')}</b>\n"
+        f"<b>{html.escape(f'💰 After debts: ${format_price(cash + net)}')}</b>"
     )
 
     body = "\n\n".join(sections)
@@ -852,26 +859,9 @@ async def incomes(message: Message, command: CommandObject):
         summary = db.income_summary(user_id, start, end)
         if not summary:
             continue
-        month_total = sum(s["total"] for s in summary)
-        amounts = [f"{s['total'] / 100:.0f}" for s in summary]
-        parens = [f"({round(s['total'] / month_total * 100)}%)" for s in summary]
-        amount_w = max(len(a) for a in amounts)
-        paren_w = max(len(p) for p in parens)
-        totals = [
-            f"{amount:>{amount_w}} {paren:>{paren_w}}"
-            for amount, paren in zip(amounts, parens)
-        ]
-        total_w = max(len("Total"), *(len(t) for t in totals))
-        name_w = table_width(user_id) - total_w - 2
-        income_rows = [
-            (product_cell(s["description"], None, name_w), total)
-            for s, total in zip(summary, totals)
-        ]
-        widths = [name_w, total_w]
-        block = table_block(
-            "📈", start.strftime("%B %Y"), ("Income", "Total"), income_rows, widths
+        block = month_block(
+            user_id, "📈", start.strftime("%B %Y"), "Income", summary, "description"
         )
-        block += f"\n\nTotal: ${month_total / 100:.2f}"
         sections.append(html.escape(block))
 
     if not sections:
