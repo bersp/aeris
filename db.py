@@ -536,9 +536,9 @@ def list_scheduled(user_id):
 
 
 def remove_operation(user_id, suffix):
-    # Remove the user's expense, income or payment whose id ends with `suffix`.
-    # When several match, the most recent one wins. Returns a dict tagged with
-    # "kind", or None.
+    # Remove the user's expense, income, payment or scheduled expense whose id
+    # ends with `suffix`. When several match, the most recent one wins. Returns a
+    # dict tagged with "kind", or None.
     like = f"%{suffix}"
     with _connect() as conn:
         expense = conn.execute(
@@ -561,15 +561,35 @@ def remove_operation(user_id, suffix):
             "ORDER BY seq DESC LIMIT 1",
             (user_id, user_id, like),
         ).fetchone()
+        scheduled = conn.execute(
+            "SELECT * FROM scheduled_expenses WHERE (created_by = ? OR payer_id = ? "
+            "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?)) "
+            "AND id LIKE ? ORDER BY seq DESC LIMIT 1",
+            (user_id, user_id, user_id, like),
+        ).fetchone()
 
         candidates = [
             (kind, row)
-            for kind, row in (("expense", expense), ("income", income), ("payment", payment))
+            for kind, row in (
+                ("expense", expense),
+                ("income", income),
+                ("payment", payment),
+                ("scheduled", scheduled),
+            )
             if row is not None
         ]
         if not candidates:
             return None
         kind, row = max(candidates, key=lambda c: c[1]["created_at"])
+
+        if kind == "scheduled":
+            item = _scheduled_dict(conn, row)
+            conn.execute(
+                "DELETE FROM scheduled_consumers WHERE scheduled_seq = ?", (row["seq"],)
+            )
+            conn.execute("DELETE FROM scheduled_expenses WHERE seq = ?", (row["seq"],))
+            item["kind"] = "scheduled"
+            return item
 
         if kind == "income":
             conn.execute("DELETE FROM incomes WHERE seq = ?", (row["seq"],))

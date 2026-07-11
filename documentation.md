@@ -44,7 +44,7 @@ Pay in installments, also `/sexp`. The first field sets how many charges and the
 /scheduled
 ```
 
-Every upcoming expense, one-off deferrals and installments alike, each flagged as simple or installment.
+Every upcoming expense, one-off deferrals and installments alike, each flagged as simple or installment. Cancel one with `/rm` and its id.
 
 ## Removing an entry
 
@@ -52,7 +52,7 @@ Every upcoming expense, one-off deferrals and installments alike, each flagged a
 /remove <id suffix>
 ```
 
-Delete something logged by mistake, also `/rm`. Works on expenses, incomes and payments alike. Pass the last few characters of its id, shown in replies and the detailed lists: `/rm fk`.
+Delete something logged by mistake, also `/rm`. Works on expenses, incomes, payments and scheduled expenses alike. Pass the last few characters of its id, shown in replies and the detailed lists: `/rm fk`.
 
 ## Reviewing your spending
 

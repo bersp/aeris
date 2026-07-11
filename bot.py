@@ -424,6 +424,12 @@ async def remove(message: Message, command: CommandObject):
         )
         await reply(message, f"Removed Income\n{detail}")
         return
+    if removed["kind"] == "scheduled":
+        # Scheduled expenses are created and rejected privately by their creator,
+        # so cancelling one replies only to the remover.
+        detail = scheduled_detail(removed, plan_label(removed))
+        await reply(message, f"Removed Scheduled Expense\n{detail}")
+        return
     if removed["kind"] == "payment":
         detail = payment_detail(
             day_from_id(removed["id"]), removed["id"],
