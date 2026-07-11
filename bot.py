@@ -794,8 +794,8 @@ def build_chart_markup(user_id, months):
         return None
 
     # Always at least two months, so the current one has something to compare
-    # against.
-    count = max(months, 2)
+    # against, and at most six, so the data keeps fitting in the button URL.
+    count = min(max(months, 2), 6)
     today = datetime.now().date()
 
     # One cumulative daily series per month, most recent first. Each series is a
