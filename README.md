@@ -33,7 +33,8 @@ python bot.py
 
 Data is stored in `bills.db` next to the bot. By default anyone who finds the
 bot can register; to keep it private, set `ALLOWED_USER_IDS` in `.env` to a
-comma-separated list of Telegram user ids.
+comma-separated list of Telegram user ids (you can get the ids from
+[@userinfobot](https://t.me/userinfobot)).
 
 ### The chart (optional)
 
