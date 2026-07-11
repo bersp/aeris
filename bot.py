@@ -175,7 +175,7 @@ def _add_months(d, k):
     return d.replace(year=year, month=month + 1, day=min(d.day, last_day))
 
 
-def parse_list_args(args, noun="operations", count_word="Last", default="n 6"):
+def parse_list_args(args, noun="operations", count_word="Last", default="m 1"):
     # Returns (limit, since, label): how many of the latest operations to show or
     # a datetime from which to keep them, plus a human label for the window.
     # `noun`/`count_word` shape the count-mode label (e.g. "Last 6 operations" vs
@@ -595,7 +595,7 @@ def table_block(emoji, label, header, rows, widths=None):
 @dp.message(Command("list"))
 @usage("/list [n N | m K | d K]")
 async def list_operations(message: Message, command: CommandObject):
-    limit, since, label = parse_list_args(command.args, default="m 1")
+    limit, since, label = parse_list_args(command.args)
     operations = db.recent_operations(message.from_user.id, limit, since)
     if not operations:
         await reply(message, "No operations.")
@@ -664,11 +664,11 @@ async def detailed_incomes(message: Message, command: CommandObject):
 
 @dp.message(Command("scheduled"))
 async def scheduled(message: Message, command: CommandObject = None):
-    # Every upcoming payment the user is part of, deferred expenses and
+    # Every upcoming expense the user is part of, one-off deferrals and
     # installments alike, each flagged as "simple" or "installment K/N".
     items = db.list_scheduled(message.from_user.id)
     if not items:
-        await reply(message, "No scheduled payments.")
+        await reply(message, "No scheduled expenses.")
         return
     blocks = [scheduled_detail(item, plan_label(item)) for item in items]
     await reply(message, "📅 Scheduled\n\n" + "\n\n".join(blocks))

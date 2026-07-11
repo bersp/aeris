@@ -18,7 +18,7 @@ Set your name first; others use it to share expenses. Run again to change it.
 /expense [date] <product[(note)]> <price> [payer] [beneficiaries]
 ```
 
-The everyday command, also `/exp`. Simplest is a product and price: `/exp coffee 1500`, dated today, paid by you. A leading date sets the day: `05`, `05/04` or `05/04/25` (e.g. `/exp 05/04 coffee 1500`). Parentheses after the product become a note: `/exp coffee(with Bob) 1500`. Aeris remembers products and fixes typos (`cofee` → `coffee`); a new one is marked with a *.
+The everyday command, also `/exp`. Simplest is a product and price: `/exp coffee 1500`, dated today, paid by you. A leading date sets the day: `05`, `05/04` or `05/04/25` (e.g. `/exp 05/04 coffee 1500`). Parentheses after the product become a note: `/exp coffee(with Bob) 1500`. A multi-word product is typed with underscores: `ice_cream` is shown as `ice cream`. Aeris remembers products and fixes typos (`cofee` → `coffee`); a new one is marked with a *.
 
 ```
 /forceexpense [date] <product> <price> [payer] [beneficiaries]
@@ -44,7 +44,7 @@ Pay in installments, also `/sexp`. The first field sets how many charges and the
 /scheduled
 ```
 
-Every upcoming payment, deferred expenses and installments alike, each flagged as simple or installment.
+Every upcoming expense, one-off deferrals and installments alike, each flagged as simple or installment.
 
 ## Removing an entry
 
@@ -52,7 +52,7 @@ Every upcoming payment, deferred expenses and installments alike, each flagged a
 /remove <id suffix>
 ```
 
-Delete something logged by mistake, also `/rm`. Pass the last few characters of its id, shown in replies and `/detailedlist`: `/rm fk`.
+Delete something logged by mistake, also `/rm`. Works on expenses, incomes and payments alike. Pass the last few characters of its id, shown in replies and the detailed lists: `/rm fk`.
 
 ## Reviewing your spending
 
@@ -72,7 +72,7 @@ Same entries, fully detailed. Short: `/dlist`.
 /balance [m [K]]
 ```
 
-Expenses by month, who owes whom, and your cash. A month count goes back further: `/balance m 3`.
+Expenses by month, who owes whom, and your cash. A month count goes back further: `/balance m 3`. The Open chart button plots your spending day by day, overlaying the months shown (at least two), with your monthly income as a reference line.
 
 ## Settling up
 
