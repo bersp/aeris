@@ -30,142 +30,13 @@ dp = Dispatcher()
 # only opens HTTPS URLs, so this is required for the chart button in /balance.
 WEBAPP_URL = os.environ.get("WEBAPP_URL")
 
+# Instant View documentation sent by /start and /help. Regenerate the page from
+# documentation.md with publish_telegraph.py; a bare Telegra.ph link opens as
+# Instant View in Telegram.
+HELP_URL = "https://telegra.ph/Aeris-07-11"
+
 # Commands available before registering.
 PUBLIC_COMMANDS = ("/start", "/help", "/register")
-
-# Onboarding guide shown by /start and /help. Written as flowing documentation
-# (not a terse command list) and sent as HTML. Section titles are bold; each
-# command leads with its spec on its own line, prefixed with a ▸ marker so it
-# stands out from prose even where inline code renders in the same color as text.
-# Literal angle brackets are written as &lt;/&gt; and ampersands as &amp;.
-HELP_TEXT = (
-    "<b>Aeris</b>\n"
-    "\n"
-    "Aeris tracks what you spend and earn, and works out who owes what when you "
-    "share costs. Run <code>/help</code> to see this again.\n"
-    "\n"
-    "The leading slash is optional: <code>income salary 6000</code> means "
-    "<code>/income salary 6000</code>. An unknown first word means "
-    "<code>/expense</code>, so <code>supermarket 1500</code> becomes "
-    "<code>/expense supermarket 1500</code>.\n"
-    "\n"
-    "<b>Register</b>\n"
-    "\n"
-    "▸ <code>/register &lt;name&gt;</code>\n"
-    "Set your name first; others use it to share expenses. Run again to change it.\n"
-    "\n"
-    "<b>Recording an expense</b>\n"
-    "\n"
-    "▸ <code>/expense [date] &lt;product[(note)]&gt; &lt;price&gt; [payer] [beneficiaries]</code>\n"
-    "The everyday command, also <code>/exp</code>. Simplest is a product and price: "
-    "<code>/exp coffee 1500</code>, dated today, paid by you. A leading date sets "
-    "the day: <code>05</code>, <code>05/04</code> or <code>05/04/25</code> (e.g. "
-    "<code>/exp 05/04 coffee 1500</code>). Parentheses after the product become a "
-    "note: "
-    "<code>/exp coffee(with Bob) 1500</code>. Aeris remembers products and fixes "
-    "typos (<code>cofee</code> → <code>coffee</code>); a new one is marked with a "
-    "*.\n"
-    "\n"
-    "▸ <code>/forceexpense [date] &lt;product&gt; &lt;price&gt; [payer] [beneficiaries]</code>\n"
-    "Like <code>/expense</code> but keeps the product exactly as typed, no typo "
-    "matching. Short: <code>/fexp</code>.\n"
-    "\n"
-    "<b>Sharing an expense</b>\n"
-    "\n"
-    "List who shares the cost after the price, comma-separated: "
-    "<code>/exp pizza 8000 Alice,Bob</code> means you paid, Alice and Bob split it. "
-    "<code>all</code> means everyone registered: "
-    "<code>/exp supermarket 20000 all</code>. Another payer goes first: "
-    "<code>/exp pizza 8000 Bob Alice,Carol</code>.\n"
-    "\n"
-    "<b>Scheduling</b>\n"
-    "\n"
-    "A date after today defers an expense: nothing is recorded now, and on that "
-    "day at 9am Aeris sends you its details with Add and Reject buttons. "
-    "<code>/exp 20/12 gift 5000</code> asks you on the 20th.\n"
-    "\n"
-    "▸ <code>/scheduleexpense &lt;count&gt;&lt;m|d&gt; &lt;start date&gt; &lt;product&gt; &lt;price&gt; [payer] [beneficiaries]</code>\n"
-    "Pay in installments, also <code>/sexp</code>. The first field sets how many "
-    "charges and the gap between them: <code>6m</code> is six monthly, "
-    "<code>6d</code> six daily. <code>/sexp 6m 15/08 rent 5000</code> asks you to "
-    "confirm rent on the 15th of each month for six months.\n"
-    "\n"
-    "▸ <code>/scheduled</code>\n"
-    "Every upcoming payment, deferred expenses and installments alike, each "
-    "flagged as simple or installment.\n"
-    "\n"
-    "<b>Removing an entry</b>\n"
-    "\n"
-    "▸ <code>/remove &lt;id suffix&gt;</code>\n"
-    "Delete something logged by mistake, also <code>/rm</code>. Pass the last few "
-    "characters of its id, shown in replies and <code>/detailedlist</code>: "
-    "<code>/rm fk</code>.\n"
-    "\n"
-    "<b>Reviewing your spending</b>\n"
-    "\n"
-    "▸ <code>/list [n N | m [K] | d [K]]</code>\n"
-    "Your operations as a compact table, this month by default. Other windows: "
-    "<code>/list n 10</code> (last ten), <code>/list m 3</code> (three months), "
-    "<code>/list d 7</code> (seven days).\n"
-    "\n"
-    "▸ <code>/detailedlist [n N | m [K] | d [K]]</code>\n"
-    "Same entries, fully detailed. Short: <code>/dlist</code>.\n"
-    "\n"
-    "▸ <code>/balance [m [K]]</code>\n"
-    "Expenses by month, who owes whom, and your cash. A month count goes back "
-    "further: <code>/balance m 3</code>.\n"
-    "\n"
-    "<b>Settling up</b>\n"
-    "\n"
-    "▸ <code>/pay [payer] &lt;payee&gt; &lt;amount&gt;</code>\n"
-    "Record a cash payment against a debt. <code>/pay Bob 5000</code> means you paid "
-    "Bob. A payment between others names the payer first: "
-    "<code>/pay Alice Bob 5000</code>.\n"
-    "\n"
-    "<b>Income</b>\n"
-    "\n"
-    "▸ <code>/income [date] &lt;name&gt; &lt;amount&gt;</code>\n"
-    "Money coming in, also <code>/inc</code>: <code>/inc salary 300000</code>. Dates "
-    "work as in expenses.\n"
-    "\n"
-    "▸ <code>/incomes [m [K]]</code>\n"
-    "Your income per month with a total; takes a month count like "
-    "<code>/balance</code>.\n"
-    "\n"
-    "▸ <code>/detailedincomes [n N | m [K] | d [K]]</code>\n"
-    "Your incomes, fully detailed. Short: <code>/dincomes</code>.\n"
-    "\n"
-    "<b>Aliases and products</b>\n"
-    "\n"
-    "▸ <code>/alias &lt;alias&gt; &lt;product&gt;</code>\n"
-    "A shortcut for a long name: <code>/alias g groceries</code> lets <code>g</code> "
-    "stand for <code>groceries</code>.\n"
-    "\n"
-    "▸ <code>/rmalias &lt;alias&gt;</code>\n"
-    "Removes an alias.\n"
-    "\n"
-    "▸ <code>/products</code>\n"
-    "Every product you bought, how often, and its aliases.\n"
-    "\n"
-    "<b>Groups</b>\n"
-    "\n"
-    "▸ <code>/group &lt;name&gt; &lt;product,product,...&gt;</code>\n"
-    "Fold products into one balance line: "
-    "<code>/group transport taxi,subway,train</code> shows their total as "
-    "<code>transport</code>. Run again with the same name to add more.\n"
-    "\n"
-    "▸ <code>/ungroup &lt;name&gt;</code>\n"
-    "Undo a group.\n"
-    "\n"
-    "▸ <code>/groups</code>\n"
-    "Your groups and their products.\n"
-    "\n"
-    "<b>Display</b>\n"
-    "\n"
-    "▸ <code>/tablewidth [number]</code>\n"
-    "Resize the tables if they wrap: <code>/tablewidth 40</code>. No number restores "
-    "the default."
-)
 
 
 # Every bot reply is sent as monospace so it is visually distinct from user text.
@@ -326,12 +197,12 @@ def parse_list_args(args, noun="operations", count_word="Last", default="n 6"):
 
 @dp.message(Command("start"))
 async def start(message: Message, command: CommandObject = None):
-    await message.answer(HELP_TEXT, parse_mode="HTML")
+    await message.answer(HELP_URL)
 
 
 @dp.message(Command("help"))
 async def help_command(message: Message, command: CommandObject = None):
-    await message.answer(HELP_TEXT, parse_mode="HTML")
+    await message.answer(HELP_URL)
 
 
 @dp.message(Command("register"))
