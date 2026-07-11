@@ -31,10 +31,16 @@ dp = Dispatcher()
 # only opens HTTPS URLs, so this is required for the chart button in /balance.
 WEBAPP_URL = os.environ.get("WEBAPP_URL")
 
-# Instant View documentation sent by /start and /help. Regenerate the page from
-# documentation.md with publish_telegraph.py; a bare Telegra.ph link opens as
-# Instant View in Telegram.
-HELP_URL = "https://telegra.ph/Aeris-07-11"
+# Instant View documentation sent by /start and /help. Publish your own page
+# from documentation.md with publish_telegraph.py and set its URL in .env; a
+# bare Telegra.ph link opens as Instant View in Telegram.
+HELP_URL = os.environ.get("HELP_URL", "https://telegra.ph/Aeris-07-11")
+
+# Optional comma-separated Telegram user ids allowed to talk to the bot. When
+# empty, anyone who finds the bot can register.
+ALLOWED_USER_IDS = {
+    int(uid) for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
+}
 
 # Commands available before registering, with or without the leading slash.
 PUBLIC_COMMANDS = ("start", "help", "register")
@@ -72,6 +78,9 @@ def usage(text):
 
 class RequireRegistration(BaseMiddleware):
     async def __call__(self, handler, message: Message, data):
+        # Messages from outside the allowlist are ignored without a reply.
+        if ALLOWED_USER_IDS and message.from_user.id not in ALLOWED_USER_IDS:
+            return
         command = message.text.split(maxsplit=1)[0] if message.text else ""
         command = command.lstrip("/").lower()
         if command not in PUBLIC_COMMANDS and not db.is_registered(message.from_user.id):

@@ -31,7 +31,9 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-Data is stored in `bills.db` next to the bot.
+Data is stored in `bills.db` next to the bot. By default anyone who finds the
+bot can register; to keep it private, set `ALLOWED_USER_IDS` in `.env` to a
+comma-separated list of Telegram user ids.
 
 ### The chart (optional)
 
@@ -45,4 +47,4 @@ works; the page has no backend, the data travels in the URL fragment. Without
 
 `/help` replies with a Telegra.ph Instant View page generated from
 `documentation.md`. To publish your own copy, run `python publish_telegraph.py`
-and put the printed URL in `HELP_URL` in `bot.py`.
+and set the printed URL as `HELP_URL` in `.env`.
