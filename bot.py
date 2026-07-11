@@ -132,6 +132,9 @@ HELP_TEXT = (
     "Your income per month with a total; takes a month count like "
     "<code>/balance</code>.\n"
     "\n"
+    "▸ <code>/detailedincomes [n N | m [K] | d [K]]</code>\n"
+    "Your incomes, fully detailed. Short: <code>/dincomes</code>.\n"
+    "\n"
     "<b>Aliases and products</b>\n"
     "\n"
     "▸ <code>/alias &lt;alias&gt; &lt;product&gt;</code>\n"
@@ -772,6 +775,22 @@ async def detailed_list(message: Message, command: CommandObject):
     await reply(message, f"📖 {label}\n\n{body}")
 
 
+@dp.message(Command("detailedincomes", "dincomes"))
+@usage("/dincomes [n N | m K | d K]")
+async def detailed_incomes(message: Message, command: CommandObject):
+    limit, since, label = parse_list_args(command.args, noun="incomes")
+    incomes = db.recent_incomes(message.from_user.id, limit, since)
+    if not incomes:
+        await reply(message, "No incomes.")
+        return
+    blocks = [
+        income_detail(day_from_id(inc["id"]), inc["id"], inc["description"], inc["amount"])
+        for inc in incomes
+    ]
+    body = "\n\n".join(blocks)
+    await reply(message, f"📖 {label}\n\n{body}")
+
+
 @dp.message(Command("scheduled"))
 async def scheduled(message: Message, command: CommandObject = None):
     # Every upcoming payment the user is part of, deferred expenses and
@@ -1140,6 +1159,7 @@ _COMMAND_GROUPS = (
     (income, ("income", "inc")),
     (balance, ("balance",)),
     (incomes, ("incomes",)),
+    (detailed_incomes, ("detailedincomes", "dincomes")),
     (alias, ("alias",)),
     (rmalias, ("rmalias",)),
     (products, ("products",)),

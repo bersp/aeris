@@ -757,6 +757,25 @@ def daily_expense_totals(user_id, since=None, until=None):
         return conn.execute(query, params).fetchall()
 
 
+def recent_incomes(user_id, limit=6, since=None):
+    # The user's individual incomes, ordered oldest first so the latest is printed
+    # last. With `since` only the ones from that datetime on are kept; with `limit`
+    # only the last that many.
+    query = (
+        "SELECT id, created_at, description, amount FROM incomes WHERE user_id = ?"
+    )
+    params = [user_id]
+    if since is not None:
+        query += " AND created_at >= ?"
+        params.append(since.isoformat())
+    query += " ORDER BY created_at"
+    with _connect() as conn:
+        incomes = [dict(row) for row in conn.execute(query, params)]
+    if limit is not None:
+        incomes = incomes[-limit:]
+    return incomes
+
+
 def income_summary(user_id, since=None, until=None):
     # The user's incomes grouped by description and ordered largest first.
     # `since`/`until` bound the window (since inclusive, until exclusive).
