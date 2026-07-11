@@ -192,9 +192,9 @@ def parse_list_args(args, noun="operations", count_word="Last", default="m 1"):
         return n, None, f"{count_word} {n} {noun}"
     if mode == "m":
         k = number or 1
-        return None, _months_ago(k), "Last month" if k == 1 else f"Last {k} months"
+        return None, _months_ago(k), "This month" if k == 1 else f"Last {k} months"
     k = number or 1
-    return None, _days_ago(k), "Last day" if k == 1 else f"Last {k} days"
+    return None, _days_ago(k), "Today" if k == 1 else f"Last {k} days"
 
 
 @dp.message(Command("start"))
