@@ -263,7 +263,7 @@ async def schedule_expense(message: Message, command: CommandObject):
         raise ValueError  # a start date is required
     start = e["when"].date()
 
-    plan_id = db._new_id(datetime.combine(start, datetime.min.time()))
+    plan_id = db.new_id(datetime.combine(start, datetime.min.time()))
     dues = [
         _add_months(start, i) if unit == "m" else start + timedelta(days=i)
         for i in range(count)
@@ -530,7 +530,7 @@ def day_str(when=None):
 
 def day_from_id(op_id):
     # The dd/mm/yy an operation was dated, read back from its id, which begins
-    # with the date as yymmdd (see db._new_id).
+    # with the date as yymmdd (see db.new_id).
     return f"{op_id[4:6]}/{op_id[2:4]}/{op_id[0:2]}"
 
 

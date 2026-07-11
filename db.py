@@ -206,11 +206,6 @@ def all_users():
         ).fetchall()
 
 
-def count_users():
-    with _connect() as conn:
-        return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
-
-
 # --- preferences ---
 
 
@@ -362,7 +357,7 @@ def list_groups(user_id):
 # --- operations ---
 
 
-def _new_id(when):
+def new_id(when):
     return when.strftime("%y%m%d") + "".join(
         random.choices(string.ascii_lowercase, k=2)
     )
@@ -372,7 +367,7 @@ def add_expense(
     payer_id, price, product_id, consumer_ids, when=None, description=None, created_by=None
 ):
     when = when or datetime.now()
-    expense_id = _new_id(when)
+    expense_id = new_id(when)
     with _connect() as conn:
         cursor = conn.execute(
             "INSERT INTO expenses "
@@ -397,7 +392,7 @@ def add_expense(
 
 def add_income(user_id, amount, description, when=None):
     when = when or datetime.now()
-    income_id = _new_id(when)
+    income_id = new_id(when)
     with _connect() as conn:
         conn.execute(
             "INSERT INTO incomes (id, user_id, amount, description, created_at) "
@@ -409,7 +404,7 @@ def add_income(user_id, amount, description, when=None):
 
 def add_payment(payer_id, payee_id, amount):
     when = datetime.now()
-    payment_id = _new_id(when)
+    payment_id = new_id(when)
     with _connect() as conn:
         conn.execute(
             "INSERT INTO payments (id, payer_id, payee_id, amount, created_at) "
@@ -428,7 +423,7 @@ def add_scheduled_expense(
 ):
     # Store an expense to be confirmed on `due_date` (a YYYY-MM-DD string). The
     # id embeds the due date so it reads like a real expense id.
-    scheduled_id = _new_id(datetime.fromisoformat(due_date))
+    scheduled_id = new_id(datetime.fromisoformat(due_date))
     with _connect() as conn:
         cursor = conn.execute(
             "INSERT INTO scheduled_expenses "
@@ -727,8 +722,7 @@ def expense_summary(user_id, since=None, until=None):
     # group name; ungrouped products keep their own row.
     query = """
         SELECT COALESCE(g.name, p.name) AS product,
-               SUM(e.price * 1.0 / counts.n) AS total,
-               MAX(e.description IS NOT NULL AND e.description != '') AS has_description
+               SUM(e.price * 1.0 / counts.n) AS total
         FROM expenses e
         JOIN products p ON p.id = e.product_id
         LEFT JOIN product_groups g
