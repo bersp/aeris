@@ -4,6 +4,7 @@ import functools
 import html
 import json
 import logging
+import math
 import os
 import re
 import urllib.parse
@@ -35,8 +36,8 @@ WEBAPP_URL = os.environ.get("WEBAPP_URL")
 # Instant View in Telegram.
 HELP_URL = "https://telegra.ph/Aeris-07-11"
 
-# Commands available before registering.
-PUBLIC_COMMANDS = ("/start", "/help", "/register")
+# Commands available before registering, with or without the leading slash.
+PUBLIC_COMMANDS = ("start", "help", "register")
 
 
 # Every bot reply is sent as monospace so it is visually distinct from user text.
@@ -72,6 +73,7 @@ def usage(text):
 class RequireRegistration(BaseMiddleware):
     async def __call__(self, handler, message: Message, data):
         command = message.text.split(maxsplit=1)[0] if message.text else ""
+        command = command.lstrip("/").lower()
         if command not in PUBLIC_COMMANDS and not db.is_registered(message.from_user.id):
             await reply(message, "Register first with /register <name>")
             return
@@ -209,6 +211,13 @@ async def help_command(message: Message, command: CommandObject = None):
 @usage("/register <name>")
 async def register(message: Message, command: CommandObject):
     name = command.args.strip()
+    if not name:
+        raise ValueError
+    # Names are referenced in other commands, where they are split on whitespace,
+    # listed with commas, and told apart from amounts and the "all" keyword.
+    if len(name.split()) > 1 or "," in name or is_number(name) or name.lower() == "all":
+        await reply(message, 'Name must be a single word, not a number and not "all".')
+        return
     user_id = message.from_user.id
     old_name = db.get_name(user_id)
     db.set_name(user_id, name)
@@ -433,7 +442,11 @@ async def remove(message: Message, command: CommandObject):
 
 def parse_amount(text):
     # A decimal amount typed by the user, stored as an integer number of cents.
-    return round(float(text) * 100)
+    # Zero, negative and non-finite amounts are malformed input.
+    value = float(text)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"bad amount: {text}")
+    return round(value * 100)
 
 
 def format_price(cents):
