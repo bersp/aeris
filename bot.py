@@ -428,40 +428,91 @@ async def record_expense(message, command, force):
     await broadcast(message, recipients, f"Added Expense\n{detail}")
 
 
+OPERATION_LABELS = {
+    "expense": "Expense",
+    "income": "Income",
+    "payment": "Payment",
+    "scheduled": "Scheduled Expense",
+}
+
+
+def operation_detail(item):
+    # Any operation rendered in the /detailedlist style, whichever kind it is.
+    if item["kind"] == "scheduled":
+        return scheduled_detail(item, plan_label(item))
+    if item["kind"] == "income":
+        return income_detail(
+            day_from_id(item["id"]), item["id"], item["description"], item["amount"]
+        )
+    if item["kind"] == "payment":
+        return payment_detail(
+            day_from_id(item["id"]), item["id"],
+            item["payer"], item["payee"], item["amount"],
+        )
+    return expense_detail(
+        day_from_id(item["id"]), item["id"], item["product"], item["price"],
+        item["description"], item["payer"], item["consumers"], item["added_by"],
+    )
+
+
+def removal_recipients(item, remover_id):
+    # Who hears about a removal. Scheduled expenses are created and rejected
+    # privately by their creator, and an income is nobody else's business, so
+    # those two only reply to the remover.
+    if item["kind"] == "payment":
+        return {remover_id, item["payer_id"], item["payee_id"]}
+    if item["kind"] == "expense":
+        return {remover_id, item["payer_id"]} | set(item["consumer_ids"])
+    return {remover_id}
+
+
 @dp.message(Command("remove", "rm"))
 @usage("/rm <id suffix>")
 async def remove(message: Message, command: CommandObject):
+    # An id suffix can match several operations, and only the most recent one is
+    # picked, so nothing is deleted until the user has seen exactly which.
     suffix = command.args.strip()
-    removed = db.remove_operation(message.from_user.id, suffix)
-    if removed is None:
+    item = db.find_operation(message.from_user.id, suffix)
+    if item is None:
         await reply(message, "Nothing to remove.")
         return
-    if removed["kind"] == "income":
-        detail = income_detail(
-            day_from_id(removed["id"]), removed["id"], removed["description"], removed["amount"]
-        )
-        await reply(message, f"Removed Income\n{detail}")
-        return
-    if removed["kind"] == "scheduled":
-        # Scheduled expenses are created and rejected privately by their creator,
-        # so cancelling one replies only to the remover.
-        detail = scheduled_detail(removed, plan_label(removed))
-        await reply(message, f"Removed Scheduled Expense\n{detail}")
-        return
-    if removed["kind"] == "payment":
-        detail = payment_detail(
-            day_from_id(removed["id"]), removed["id"],
-            removed["payer"], removed["payee"], removed["amount"],
-        )
-        recipients = {message.from_user.id, removed["payer_id"], removed["payee_id"]}
-        await broadcast(message, recipients, f"Removed Payment\n{detail}")
-        return
-    detail = expense_detail(
-        day_from_id(removed["id"]), removed["id"], removed["product"], removed["price"],
-        removed["description"], removed["payer"], removed["consumers"], removed["added_by"],
+    target = f"{item['kind']}:{item['seq']}"
+    buttons = [
+        InlineKeyboardButton(text="Remove", callback_data=f"rm:yes:{target}"),
+        InlineKeyboardButton(text="Keep", callback_data=f"rm:no:{target}"),
+    ]
+    text = f"Remove this {OPERATION_LABELS[item['kind']].lower()}?\n{operation_detail(item)}"
+    await message.answer(
+        f"<code>{html.escape(text)}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
     )
-    recipients = {message.from_user.id, removed["payer_id"]} | set(removed["consumer_ids"])
-    await broadcast(message, recipients, f"Removed Expense\n{detail}")
+
+
+@dp.callback_query(F.data.startswith("rm:"))
+async def on_remove_action(query: CallbackQuery):
+    # Handle the Remove/Keep buttons. The lookup is scoped to whoever tapped, so
+    # the ids in the button cannot be used to reach someone else's operations.
+    _, action, kind, seq = query.data.split(":", 3)
+    if action == "no":
+        item = db.get_operation(query.from_user.id, kind, int(seq))
+        text = "Kept." if item is None else f"Kept\n{operation_detail(item)}"
+        await query.message.edit_text(
+            f"<code>{html.escape(text)}</code>", parse_mode="HTML"
+        )
+        await query.answer()
+        return
+
+    item = db.delete_operation(query.from_user.id, kind, int(seq))
+    if item is None:
+        await query.answer("Already removed.")
+        return
+    text = f"Removed {OPERATION_LABELS[kind]}\n{operation_detail(item)}"
+    body = f"<code>{html.escape(text)}</code>"
+    await query.message.edit_text(body, parse_mode="HTML")
+    for user_id in removal_recipients(item, query.from_user.id) - {query.from_user.id}:
+        await query.bot.send_message(user_id, body, parse_mode="HTML")
+    await query.answer()
 
 
 def parse_amount(text):

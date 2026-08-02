@@ -530,114 +530,156 @@ def list_scheduled(user_id):
         return [_scheduled_dict(conn, row) for row in rows]
 
 
-def remove_operation(user_id, suffix):
-    # Remove the user's expense, income, payment or scheduled expense whose id
-    # ends with `suffix`. When several match, the most recent one wins. Returns a
-    # dict tagged with "kind", or None.
-    like = f"%{suffix}"
-    with _connect() as conn:
-        expense = conn.execute(
-            "SELECT e.seq, e.id, e.created_at, e.price, e.description, e.created_by, "
-            "p.name AS product, e.payer_id "
-            "FROM expenses e JOIN products p ON p.id = e.product_id "
-            "WHERE (e.payer_id = ? OR e.seq IN "
-            "(SELECT expense_seq FROM consumers WHERE user_id = ?)) "
-            "AND e.id LIKE ? ORDER BY e.seq DESC LIMIT 1",
-            (user_id, user_id, like),
-        ).fetchone()
-        income = conn.execute(
-            "SELECT seq, id, created_at, amount, description "
-            "FROM incomes WHERE user_id = ? AND id LIKE ? ORDER BY seq DESC LIMIT 1",
-            (user_id, like),
-        ).fetchone()
-        payment = conn.execute(
-            "SELECT seq, id, created_at, amount, payer_id, payee_id "
-            "FROM payments WHERE (payer_id = ? OR payee_id = ?) AND id LIKE ? "
-            "ORDER BY seq DESC LIMIT 1",
-            (user_id, user_id, like),
-        ).fetchone()
-        scheduled = conn.execute(
-            "SELECT * FROM scheduled_expenses WHERE (created_by = ? OR payer_id = ? "
-            "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?)) "
-            "AND id LIKE ? ORDER BY seq DESC LIMIT 1",
-            (user_id, user_id, user_id, like),
+# The kinds of operation /rm acts on. Each entry is the query scoping rows to the
+# ones a user takes part in, how many times their id fills into it, and the prefix
+# its columns need (only the expense query joins another table with an `id`).
+_OPERATION_SCOPES = {
+    "expense": (
+        "SELECT e.seq, e.id, e.created_at, e.price, e.description, e.created_by, "
+        "p.name AS product, e.payer_id "
+        "FROM expenses e JOIN products p ON p.id = e.product_id "
+        "WHERE (e.payer_id = ? OR e.seq IN "
+        "(SELECT expense_seq FROM consumers WHERE user_id = ?))",
+        2,
+        "e.",
+    ),
+    "income": (
+        "SELECT seq, id, created_at, amount, description FROM incomes WHERE user_id = ?",
+        1,
+        "",
+    ),
+    "payment": (
+        "SELECT seq, id, created_at, amount, payer_id, payee_id "
+        "FROM payments WHERE (payer_id = ? OR payee_id = ?)",
+        2,
+        "",
+    ),
+    "scheduled": (
+        "SELECT * FROM scheduled_expenses WHERE (created_by = ? OR payer_id = ? "
+        "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?))",
+        3,
+        "",
+    ),
+}
+
+
+def _scoped_operation(conn, kind, user_id, column, value):
+    # The latest row of `kind` the user takes part in whose `column` matches: the
+    # id when searching by suffix, the seq when acting on a chosen one.
+    query, times, prefix = _OPERATION_SCOPES[kind]
+    operator = "LIKE" if column == "id" else "="
+    return conn.execute(
+        f"{query} AND {prefix}{column} {operator} ? ORDER BY {prefix}seq DESC LIMIT 1",
+        (user_id,) * times + (value,),
+    ).fetchone()
+
+
+def _operation_dict(conn, kind, row):
+    # One operation in the shape the bot renders, tagged with its "kind" and
+    # carrying the "seq" the confirmation button needs to act on it later.
+    if kind == "scheduled":
+        item = _scheduled_dict(conn, row)
+        item["kind"] = "scheduled"
+        return item
+
+    if kind == "income":
+        return {
+            "kind": "income",
+            "seq": row["seq"],
+            "id": row["id"],
+            "description": row["description"],
+            "amount": row["amount"],
+        }
+
+    def name_of(user):
+        return conn.execute(
+            "SELECT name FROM users WHERE user_id = ?", (user,)
         ).fetchone()
 
-        candidates = [
-            (kind, row)
-            for kind, row in (
-                ("expense", expense),
-                ("income", income),
-                ("payment", payment),
-                ("scheduled", scheduled),
-            )
-            if row is not None
-        ]
+    if kind == "payment":
+        return {
+            "kind": "payment",
+            "seq": row["seq"],
+            "id": row["id"],
+            "amount": row["amount"],
+            "payer_id": row["payer_id"],
+            "payee_id": row["payee_id"],
+            "payer": name_of(row["payer_id"])["name"],
+            "payee": name_of(row["payee_id"])["name"],
+        }
+
+    payer = name_of(row["payer_id"])["name"]
+    creator = name_of(row["created_by"])
+    consumers = conn.execute(
+        "SELECT c.user_id, u.name FROM consumers c JOIN users u ON u.user_id = c.user_id "
+        "WHERE c.expense_seq = ?",
+        (row["seq"],),
+    ).fetchall()
+    return {
+        "kind": "expense",
+        "seq": row["seq"],
+        "id": row["id"],
+        "product": row["product"],
+        "price": row["price"],
+        "description": row["description"],
+        "payer_id": row["payer_id"],
+        "payer": payer,
+        "added_by": creator["name"] if creator else payer,
+        "consumer_ids": [c["user_id"] for c in consumers],
+        "consumers": [c["name"] for c in consumers],
+    }
+
+
+def find_operation(user_id, suffix):
+    # The user's expense, income, payment or scheduled expense whose id ends with
+    # `suffix`; when several match, the most recent one wins. Read-only, so the
+    # bot can show what it is about to delete and ask first. Returns a dict tagged
+    # with "kind", or None.
+    with _connect() as conn:
+        candidates = []
+        for kind in _OPERATION_SCOPES:
+            row = _scoped_operation(conn, kind, user_id, "id", f"%{suffix}")
+            if row is not None:
+                candidates.append((kind, row))
         if not candidates:
             return None
-        kind, row = max(candidates, key=lambda c: c[1]["created_at"])
+        kind, row = max(candidates, key=lambda candidate: candidate[1]["created_at"])
+        return _operation_dict(conn, kind, row)
 
+
+def get_operation(user_id, kind, seq):
+    # One specific operation of the user's, by kind and seq.
+    if kind not in _OPERATION_SCOPES:
+        return None
+    with _connect() as conn:
+        row = _scoped_operation(conn, kind, user_id, "seq", seq)
+        return _operation_dict(conn, kind, row) if row is not None else None
+
+
+def delete_operation(user_id, kind, seq):
+    # Delete the operation the user confirmed, scoping the lookup to them again
+    # rather than trusting what came back from the button. Returns the deleted
+    # operation, or None when it is already gone, so a double tap does nothing.
+    if kind not in _OPERATION_SCOPES:
+        return None
+    with _connect() as conn:
+        row = _scoped_operation(conn, kind, user_id, "seq", seq)
+        if row is None:
+            return None
+        item = _operation_dict(conn, kind, row)
         if kind == "scheduled":
-            item = _scheduled_dict(conn, row)
             conn.execute(
-                "DELETE FROM scheduled_consumers WHERE scheduled_seq = ?", (row["seq"],)
+                "DELETE FROM scheduled_consumers WHERE scheduled_seq = ?", (seq,)
             )
-            conn.execute("DELETE FROM scheduled_expenses WHERE seq = ?", (row["seq"],))
-            item["kind"] = "scheduled"
-            return item
-
-        if kind == "income":
-            conn.execute("DELETE FROM incomes WHERE seq = ?", (row["seq"],))
-            return {
-                "kind": "income",
-                "id": row["id"],
-                "description": row["description"],
-                "amount": row["amount"],
-            }
-
-        if kind == "payment":
-            payer = conn.execute(
-                "SELECT name FROM users WHERE user_id = ?", (row["payer_id"],)
-            ).fetchone()["name"]
-            payee = conn.execute(
-                "SELECT name FROM users WHERE user_id = ?", (row["payee_id"],)
-            ).fetchone()["name"]
-            conn.execute("DELETE FROM payments WHERE seq = ?", (row["seq"],))
-            return {
-                "kind": "payment",
-                "id": row["id"],
-                "amount": row["amount"],
-                "payer_id": row["payer_id"],
-                "payee_id": row["payee_id"],
-                "payer": payer,
-                "payee": payee,
-            }
-
-        payer = conn.execute(
-            "SELECT name FROM users WHERE user_id = ?", (row["payer_id"],)
-        ).fetchone()["name"]
-        creator = conn.execute(
-            "SELECT name FROM users WHERE user_id = ?", (row["created_by"],)
-        ).fetchone()
-        consumers = conn.execute(
-            "SELECT c.user_id, u.name FROM consumers c JOIN users u ON u.user_id = c.user_id "
-            "WHERE c.expense_seq = ?",
-            (row["seq"],),
-        ).fetchall()
-        conn.execute("DELETE FROM consumers WHERE expense_seq = ?", (row["seq"],))
-        conn.execute("DELETE FROM expenses WHERE seq = ?", (row["seq"],))
-        return {
-            "kind": "expense",
-            "id": row["id"],
-            "product": row["product"],
-            "price": row["price"],
-            "description": row["description"],
-            "payer_id": row["payer_id"],
-            "payer": payer,
-            "added_by": creator["name"] if creator else payer,
-            "consumer_ids": [c["user_id"] for c in consumers],
-            "consumers": [c["name"] for c in consumers],
-        }
+            conn.execute("DELETE FROM scheduled_expenses WHERE seq = ?", (seq,))
+        elif kind == "income":
+            conn.execute("DELETE FROM incomes WHERE seq = ?", (seq,))
+        elif kind == "payment":
+            conn.execute("DELETE FROM payments WHERE seq = ?", (seq,))
+        else:
+            conn.execute("DELETE FROM consumers WHERE expense_seq = ?", (seq,))
+            conn.execute("DELETE FROM expenses WHERE seq = ?", (seq,))
+        return item
 
 
 def first_operation_date(user_id):

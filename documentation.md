@@ -54,6 +54,8 @@ Every upcoming expense, one-off deferrals and installments alike, each flagged a
 
 Delete something logged by mistake, also `/rm`. Works on expenses, incomes, payments and scheduled expenses alike. Pass the last few characters of its id, shown in replies and the detailed lists: `/rm fk`.
 
+Nothing is deleted right away: the bot shows the operation it matched and waits for you to confirm. A short suffix can match several entries, in which case it offers the most recent one, so check the reply before confirming and pass more characters to reach an older one.
+
 ## Reviewing your spending
 
 ```
