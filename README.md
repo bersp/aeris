@@ -16,6 +16,7 @@ monospace tables. Everything is stored in a local SQLite file.
 - Incomes, and your cash position after debts
 - Future-dated expenses and installment plans, confirmed the day they are due
 - Aliases and product groups to organize your spending
+- Removing and rewriting entries, with a confirmation before anything changes
 - A chart to compare your spending across months
 - A web page to browse and filter everything you have logged
 

@@ -46,7 +46,7 @@ Pay in installments, also `/sexp`. The first field sets how many charges and the
 
 Every upcoming expense, one-off deferrals and installments alike, each flagged as simple or installment. Cancel one with `/rm` and its id.
 
-## Removing an entry
+## Fixing an entry
 
 ```
 /remove <id suffix>
@@ -55,6 +55,16 @@ Every upcoming expense, one-off deferrals and installments alike, each flagged a
 Delete something logged by mistake, also `/rm`. Works on expenses, incomes, payments and scheduled expenses alike. Pass the last few characters of its id, shown in replies and the detailed lists: `/rm fk`.
 
 Nothing is deleted right away: the bot shows the operation it matched and waits for you to confirm. A short suffix can match several entries, in which case it offers the most recent one, so check the reply before confirming and pass more characters to reach an older one.
+
+```
+/modify <id suffix> [date] <product[(note)]> [price] [payer] [beneficiaries]
+```
+
+Rewrite an entry, also `/mod`. After the id, type it the way you would type a new expense, or a new income when that is what you are changing: `/mod fk super(the note I forgot)`. Names go through aliases and typo collapsing exactly as they do when adding.
+
+Everything you leave out keeps the value it has, so that example touches only the note. Since the price comes after the product, changing it means restating the product too: `/mod fk super 7500`. An empty `()` deletes a note. Dating an entry into the future turns it into a scheduled expense, and dating one back records it now.
+
+It shows you the entry before and after and waits for you to confirm, like `/remove`. The id keeps its last two letters, so the suffix you type still works afterwards.
 
 ## Reviewing your spending
 

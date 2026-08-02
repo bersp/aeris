@@ -309,29 +309,45 @@ class InputError(Exception):
     pass
 
 
-def parse_expense_input(sender_id, args, force):
+def parse_expense_input(sender_id, args, force, current=None):
     # Parse the shared "[date] <product[(note)]> <price> [payer] [beneficiaries]"
     # form used by /expense and /scheduleexpense, resolve the product and the
     # participants, and return them as a dict. Raises InputError for problems that
     # have their own message; lets malformed input raise so /usage handles it.
+    #
+    # `current` is an expense being rewritten by /modify. With it, every field but
+    # the product is optional and keeps the value it already has, so a note can be
+    # added without restating the price or who it was for.
 
     # Optional description in parentheses attached to the product, e.g.
     # "others(some note)". It may contain spaces, so pull it out before splitting.
+    # An empty "()" clears a note that is already there.
     match = re.search(r"\(([^)]*)\)", args)
-    description = (match.group(1).strip() if match else "") or None
     if match:
+        description = match.group(1).strip() or None
         args = args[: match.start()] + args[match.end() :]
+    else:
+        description = current["description"] if current else None
     parts = args.split()
 
-    # Optional purchase date as the first argument (today if omitted).
+    # Optional purchase date as the first argument (today if omitted, or the date
+    # it already has when rewriting).
     when = parse_date(parts[0])
     if when is not None:
         parts = parts[1:]
+    elif current is not None:
+        when = current["when"]
 
     product = parts[0]
     if is_number(product):
         raise InputError("Product cannot be a number.")
-    price = parse_amount(parts[1])
+    # The price sits after the product, so rewriting one means restating the other.
+    if len(parts) > 1:
+        price = parse_amount(parts[1])
+    elif current is not None:
+        price = current["price"]
+    else:
+        raise IndexError
 
     # /expense collapses the product to the sender's existing spelling (same name
     # ignoring case, or a one-letter typo); /forceexpense stores it exactly as
@@ -354,7 +370,12 @@ def parse_expense_input(sender_id, args, force):
     # sender pays and consumes. Shared: a single trailing field is the
     # beneficiaries with the sender as payer; two fields are "<payer>
     # <beneficiaries>". Beneficiaries are comma-separated names, or "all".
-    if len(parts) < 3:
+    if len(parts) < 3 and current is not None:
+        payer_id = current["payer_id"]
+        payer_name = current["payer"]
+        consumer_ids = list(current["consumer_ids"])
+        consumer_names = list(current["consumers"])
+    elif len(parts) < 3:
         payer_id = sender_id
         payer_name = db.get_name(payer_id)
         consumer_ids = [payer_id]
@@ -391,6 +412,26 @@ def parse_expense_input(sender_id, args, force):
     }
 
 
+def store_expense(creator_id, e, keep_id=None, plan=None):
+    # Write a parsed expense, deferring it when its date is in the future: it is
+    # stored as scheduled and confirmed on its day (see run_scheduler / the sched:
+    # callback) instead of recorded now. `keep_id` rewrites an existing operation
+    # in place, `plan` carries an installment's place in its series. Returns the
+    # kind it ended up as and its id.
+    when = e["when"]
+    if when is not None and when.date() > datetime.now().date():
+        plan_id, plan_index, plan_total = plan or (None, None, None)
+        return "scheduled", db.add_scheduled_expense(
+            creator_id, e["payer_id"], e["price"], e["product_id"], e["consumer_ids"],
+            when.date().isoformat(), e["description"], plan_id, plan_index, plan_total,
+            scheduled_id=keep_id,
+        )
+    return "expense", db.add_expense(
+        e["payer_id"], e["price"], e["product_id"], e["consumer_ids"], when,
+        e["description"], created_by=creator_id, expense_id=keep_id,
+    )
+
+
 async def record_expense(message, command, force):
     try:
         e = parse_expense_input(message.from_user.id, command.args, force)
@@ -398,32 +439,16 @@ async def record_expense(message, command, force):
         await reply(message, str(error))
         return
 
-    when = e["when"]
     creator_id = message.from_user.id
     creator_name = db.get_name(creator_id)
-
-    # A future date defers the expense: it is stored as scheduled and confirmed on
-    # its day (see run_scheduler / the sched: callback) instead of recorded now.
-    if when is not None and when.date() > datetime.now().date():
-        scheduled_id = db.add_scheduled_expense(
-            creator_id, e["payer_id"], e["price"], e["product_id"], e["consumer_ids"],
-            when.date().isoformat(), e["description"],
-        )
-        detail = expense_detail(
-            day_str(when), scheduled_id, e["display_product"], e["price"], e["description"],
-            e["payer_name"], e["consumer_names"], creator_name,
-        )
+    kind, operation_id = store_expense(creator_id, e)
+    detail = expense_detail(
+        day_str(e["when"]), operation_id, e["display_product"], e["price"],
+        e["description"], e["payer_name"], e["consumer_names"], creator_name,
+    )
+    if kind == "scheduled":
         await reply(message, f"Scheduled Expense\n{detail}")
         return
-
-    expense_id = db.add_expense(
-        e["payer_id"], e["price"], e["product_id"], e["consumer_ids"], when,
-        e["description"], created_by=creator_id,
-    )
-    detail = expense_detail(
-        day_str(when), expense_id, e["display_product"], e["price"], e["description"],
-        e["payer_name"], e["consumer_names"], creator_name,
-    )
     recipients = {creator_id, e["payer_id"]} | set(e["consumer_ids"])
     await broadcast(message, recipients, f"Added Expense\n{detail}")
 
@@ -487,6 +512,142 @@ async def remove(message: Message, command: CommandObject):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
     )
+
+
+# Rewrites waiting on their confirmation button, keyed by who asked and which
+# operation they are about to change. Kept in memory on purpose: a prompt that
+# outlives a restart is not worth a table, and the callback says so if it is gone.
+PENDING_MODIFICATIONS = {}
+
+
+def operation_when(item):
+    # The datetime an operation is dated by: its due date when scheduled, the
+    # moment it was recorded otherwise.
+    if item["kind"] == "scheduled":
+        return datetime.fromisoformat(item["due_date"])
+    return datetime.fromisoformat(item["created_at"])
+
+
+def modified_detail(item, change, kind, operation_id):
+    # What the operation will look like once the change is applied, rendered the
+    # same way the real thing is.
+    if kind == "income":
+        return income_detail(
+            day_str(change["when"]), operation_id, change["name"], change["amount"]
+        )
+    return expense_detail(
+        day_str(change["when"]), operation_id, change["display_product"], change["price"],
+        change["description"], change["payer_name"], change["consumer_names"],
+        item.get("added_by"),
+    )
+
+
+def resulting_kind(item, change):
+    # A rewrite can move an expense across the line: dating it ahead defers it,
+    # dating a deferred one back records it now.
+    if item["kind"] == "income":
+        return "income"
+    when = change["when"]
+    if when is not None and when.date() > datetime.now().date():
+        return "scheduled"
+    return "expense"
+
+
+@dp.message(Command("modify", "mod"))
+@usage("/mod <id suffix> [date] <product[(note)]> [price] [payer] [beneficiaries]")
+async def modify(message: Message, command: CommandObject):
+    # Rewrite an entry through the same parsing an /expense or /income goes
+    # through, so aliases, typo collapsing and "all" behave identically. Whatever
+    # is left out keeps the value it has, and nothing is written until confirmed.
+    suffix, _, rest = command.args.strip().partition(" ")
+    rest = rest.strip()
+    if not suffix or not rest:
+        raise ValueError
+
+    sender_id = message.from_user.id
+    item = db.find_operation(sender_id, suffix)
+    if item is None:
+        await reply(message, "Nothing to modify.")
+        return
+    if item["kind"] == "payment":
+        await reply(message, "Payments cannot be modified. Remove it with /rm and pay again.")
+        return
+
+    current = dict(item, when=operation_when(item))
+    try:
+        if item["kind"] == "income":
+            change = parse_income_input(rest, current)
+        else:
+            change = parse_expense_input(sender_id, rest, False, current)
+    except InputError as error:
+        await reply(message, str(error))
+        return
+
+    PENDING_MODIFICATIONS[(sender_id, item["kind"], item["seq"])] = (item, change)
+    kind = resulting_kind(item, change)
+    after = modified_detail(item, change, kind, db.reid(item["id"], change["when"]))
+    text = (
+        f"Modify this {OPERATION_LABELS[item['kind']].lower()}?\n"
+        f"{operation_detail(item)}\n\nbecomes\n\n{after}"
+    )
+    target = f"{item['kind']}:{item['seq']}"
+    buttons = [
+        InlineKeyboardButton(text="Modify", callback_data=f"mod:yes:{target}"),
+        InlineKeyboardButton(text="Keep", callback_data=f"mod:no:{target}"),
+    ]
+    await message.answer(
+        f"<code>{html.escape(text)}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+    )
+
+
+@dp.callback_query(F.data.startswith("mod:"))
+async def on_modify_action(query: CallbackQuery):
+    # Apply a confirmed rewrite by deleting the old row and storing the new one
+    # through the ordinary add path, keeping the id so the suffix people already
+    # know still reaches it.
+    _, action, kind, seq = query.data.split(":", 3)
+    seq = int(seq)
+    pending = PENDING_MODIFICATIONS.pop((query.from_user.id, kind, seq), None)
+    if pending is None:
+        await query.answer("Expired. Run /mod again.")
+        return
+    item, change = pending
+
+    if action == "no":
+        text = f"Kept\n{operation_detail(item)}"
+        await query.message.edit_text(
+            f"<code>{html.escape(text)}</code>", parse_mode="HTML"
+        )
+        await query.answer()
+        return
+
+    if db.delete_operation(query.from_user.id, kind, seq) is None:
+        await query.answer("Already gone.")
+        return
+
+    keep_id = db.reid(item["id"], change["when"])
+    creator_id = item.get("created_by") or query.from_user.id
+    if kind == "income":
+        new_kind = "income"
+        db.add_income(
+            creator_id, change["amount"], change["name"], change["when"], income_id=keep_id
+        )
+    else:
+        plan = (item.get("plan_id"), item.get("plan_index"), item.get("plan_total"))
+        new_kind, keep_id = store_expense(creator_id, change, keep_id, plan)
+
+    detail = modified_detail(item, change, new_kind, keep_id)
+    body = f"<code>{html.escape(f'Modified {OPERATION_LABELS[new_kind]}')}\n{html.escape(detail)}</code>"
+    await query.message.edit_text(body, parse_mode="HTML")
+    # Everyone who was involved before or is involved now hears about it.
+    recipients = removal_recipients(item, query.from_user.id)
+    if new_kind == "expense":
+        recipients |= {change["payer_id"], *change["consumer_ids"]}
+    for user_id in recipients - {query.from_user.id}:
+        await query.bot.send_message(user_id, body, parse_mode="HTML")
+    await query.answer()
 
 
 @dp.callback_query(F.data.startswith("rm:"))
@@ -785,23 +946,41 @@ async def scheduled(message: Message, command: CommandObject = None):
     await reply(message, "📅 Scheduled\n\n" + "\n\n".join(blocks))
 
 
-@dp.message(Command("income", "inc"))
-@usage("/inc [date] <name> <amount>")
-async def income(message: Message, command: CommandObject):
-    parts = command.args.split()
+def parse_income_input(args, current=None):
+    # Parse the "[date] <name> <amount>" form used by /income, and by /modify when
+    # rewriting one. As with expenses, `current` makes the amount optional and the
+    # date default to the one it already has.
+    parts = args.split()
 
     # Optional date as the first argument (today if omitted).
     when = parse_date(parts[0])
     if when is not None:
         parts = parts[1:]
+    elif current is not None:
+        when = current["when"]
 
     name = parts[0]
     if is_number(name):
-        await reply(message, "Name cannot be a number.")
+        raise InputError("Name cannot be a number.")
+    if len(parts) > 1:
+        amount = parse_amount(parts[1])
+    elif current is not None:
+        amount = current["amount"]
+    else:
+        raise IndexError
+    return {"when": when, "name": name, "amount": amount}
+
+
+@dp.message(Command("income", "inc"))
+@usage("/inc [date] <name> <amount>")
+async def income(message: Message, command: CommandObject):
+    try:
+        i = parse_income_input(command.args)
+    except InputError as error:
+        await reply(message, str(error))
         return
-    amount = parse_amount(parts[1])
-    income_id = db.add_income(message.from_user.id, amount, name, when)
-    detail = income_detail(day_str(when), income_id, name, amount)
+    income_id = db.add_income(message.from_user.id, i["amount"], i["name"], i["when"])
+    detail = income_detail(day_str(i["when"]), income_id, i["name"], i["amount"])
     await reply(message, f"Added Income\n{detail}")
 
 
@@ -1125,6 +1304,7 @@ _COMMAND_GROUPS = (
     (force_expense, ("forceexpense", "fexp")),
     (schedule_expense, ("scheduleexpense", "sexp")),
     (remove, ("remove", "rm")),
+    (modify, ("modify", "mod")),
     (pay, ("pay",)),
     (list_operations, ("list",)),
     (detailed_list, ("detailedlist", "dlist")),

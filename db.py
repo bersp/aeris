@@ -363,11 +363,21 @@ def new_id(when):
     )
 
 
+def reid(operation_id, when):
+    # The id an operation keeps after being rewritten. The two letters stay, so a
+    # suffix someone has already typed still finds it, while the date prefix
+    # follows `when`, since that is where the rest of the bot reads the date from.
+    return when.strftime("%y%m%d") + operation_id[-2:]
+
+
 def add_expense(
-    payer_id, price, product_id, consumer_ids, when=None, description=None, created_by=None
+    payer_id, price, product_id, consumer_ids, when=None, description=None,
+    created_by=None, expense_id=None,
 ):
+    # `expense_id` lets a rewritten expense keep the id people already know; left
+    # out, the expense gets a fresh one.
     when = when or datetime.now()
-    expense_id = new_id(when)
+    expense_id = expense_id or new_id(when)
     with _connect() as conn:
         cursor = conn.execute(
             "INSERT INTO expenses "
@@ -390,9 +400,9 @@ def add_expense(
     return expense_id
 
 
-def add_income(user_id, amount, description, when=None):
+def add_income(user_id, amount, description, when=None, income_id=None):
     when = when or datetime.now()
-    income_id = new_id(when)
+    income_id = income_id or new_id(when)
     with _connect() as conn:
         conn.execute(
             "INSERT INTO incomes (id, user_id, amount, description, created_at) "
@@ -420,10 +430,11 @@ def add_payment(payer_id, payee_id, amount):
 def add_scheduled_expense(
     created_by, payer_id, price, product_id, consumer_ids, due_date,
     description=None, plan_id=None, plan_index=None, plan_total=None,
+    scheduled_id=None,
 ):
     # Store an expense to be confirmed on `due_date` (a YYYY-MM-DD string). The
     # id embeds the due date so it reads like a real expense id.
-    scheduled_id = new_id(datetime.fromisoformat(due_date))
+    scheduled_id = scheduled_id or new_id(datetime.fromisoformat(due_date))
     with _connect() as conn:
         cursor = conn.execute(
             "INSERT INTO scheduled_expenses "
@@ -587,6 +598,7 @@ def _operation_dict(conn, kind, row):
             "kind": "income",
             "seq": row["seq"],
             "id": row["id"],
+            "created_at": row["created_at"],
             "description": row["description"],
             "amount": row["amount"],
         }
@@ -619,10 +631,12 @@ def _operation_dict(conn, kind, row):
         "kind": "expense",
         "seq": row["seq"],
         "id": row["id"],
+        "created_at": row["created_at"],
         "product": row["product"],
         "price": row["price"],
         "description": row["description"],
         "payer_id": row["payer_id"],
+        "created_by": row["created_by"],
         "payer": payer,
         "added_by": creator["name"] if creator else payer,
         "consumer_ids": [c["user_id"] for c in consumers],
