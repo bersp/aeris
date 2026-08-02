@@ -1045,23 +1045,18 @@ def build_chart_markup(months):
 
 @dp.message(Command("ui"))
 async def ui(message: Message, command: CommandObject = None):
-    # Opens the expense browser Mini App, where operations can be listed, expanded
-    # and filtered by month or by an arbitrary range. The page carries no data of
-    # its own; it reads the API. Unlike the chart button, which rides on a message
-    # that stands on its own, this command is nothing but the button, so an
-    # unconfigured URL has to say so rather than send an empty reply.
+    # Opens the graphical side of the bot: the same operations the text commands
+    # print, but listed, expandable and filterable by month or by an arbitrary
+    # range. The page carries no data of its own; it reads the API. Unlike the
+    # chart button, which rides on a message that stands on its own, this command
+    # is nothing but the button, so an unconfigured URL has to say so rather than
+    # send an empty reply.
     if not UI_URL:
         await reply(message, "Web UI is not configured.")
         return
-    first = db.first_operation_date(message.from_user.id)
-    label = (
-        f"🌐 Operations from {day_from_iso(first)} to today."
-        if first
-        else "🌐 No operations yet."
-    )
-    button = InlineKeyboardButton(text="Open expenses", web_app=WebAppInfo(url=UI_URL))
+    button = InlineKeyboardButton(text="Open UI", web_app=WebAppInfo(url=UI_URL))
     await message.answer(
-        f"<code>{html.escape(label)}</code>",
+        f"<code>{html.escape('🌐 Operations')}</code>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
     )
