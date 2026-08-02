@@ -20,6 +20,11 @@ HOST = "127.0.0.1"
 # bounds how long a captured one is worth anything.
 MAX_AUTH_AGE = timedelta(days=1)
 
+# How many months the chart will overlay. The old limit was six, set by what fit
+# in a button URL; now that the page fetches its data, the only thing being
+# protected is how many lines stay readable on a phone.
+MAX_CHART_MONTHS = 12
+
 
 def verify_init_data(init_data, bot_token):
     # The Telegram user id behind a Mini App's initData, or None if it was not
@@ -183,6 +188,49 @@ async def operations(request, user_id):
     )
 
 
+@authenticated
+async def chart(request, user_id):
+    # The cumulative daily spending the chart page draws: one series per month,
+    # most recent first, plus the current month's income for its reference line.
+    try:
+        months = min(max(int(request.query.get("months", 2)), 2), MAX_CHART_MONTHS)
+    except ValueError:
+        return web.json_response({"error": "months must be a number"}, status=400)
+
+    today = datetime.now().date()
+    series = []
+    for index in range(months):
+        start, end = db.months_ago(index + 1), db.months_ago(index)
+        totals = {
+            row["day"]: row["total"]
+            for row in db.daily_expense_totals(user_id, start, end)
+        }
+        # The current month stops at today; past months run to their last day.
+        last = today if index == 0 else (end.date() - timedelta(days=1))
+        labels, values, running = [], [], 0.0
+        day = start.date()
+        while day <= last:
+            running += totals.get(day.isoformat(), 0) / 100
+            labels.append(day.day)
+            values.append(round(running, 2))
+            day += timedelta(days=1)
+        series.append(
+            {"label": start.strftime("%B %Y"), "labels": labels, "values": values}
+        )
+
+    income = sum(
+        row["total"]
+        for row in db.income_summary(user_id, db.months_ago(1), db.months_ago(0))
+    )
+    return web.json_response(
+        {
+            "title": db.months_ago(1).strftime("%B %Y"),
+            "series": series,
+            "income": round(income / 100, 2),
+        }
+    )
+
+
 async def start_web(bot_token, port, allowed_user_ids=()):
     # Serves the read-only API inside the bot's own event loop, so there is one
     # process and one systemd unit. Read-only on purpose: nothing here writes to
@@ -190,7 +238,11 @@ async def start_web(bot_token, port, allowed_user_ids=()):
     app = web.Application()
     app["bot_token"] = bot_token
     app["allowed_user_ids"] = set(allowed_user_ids)
-    app.add_routes([web.get("/meta", meta), web.get("/operations", operations)])
+    app.add_routes([
+        web.get("/meta", meta),
+        web.get("/operations", operations),
+        web.get("/chart", chart),
+    ])
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, HOST, port).start()

@@ -84,7 +84,7 @@ Same entries, fully detailed. Short: `/dlist`.
 /balance [m [K]]
 ```
 
-Expenses by month, who owes whom, and your cash. A month count goes back further: `/balance m 3`. The Open chart button plots your spending day by day, overlaying the months shown (between two and six), with your monthly income as a reference line.
+Expenses by month, who owes whom, and your cash. A month count goes back further: `/balance m 3`. The Open chart button plots your spending day by day, overlaying the months shown (between two and twelve), with your monthly income as a reference line.
 
 ```
 /ui

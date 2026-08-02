@@ -15,6 +15,16 @@ def _connect():
     return conn
 
 
+def months_ago(months):
+    # Midnight on the 1st of the month `months - 1` back, so months_ago(1) is the
+    # start of the current month and months_ago(0) the start of the next one.
+    # Reporting windows are built from pairs of these.
+    now = datetime.now()
+    month_index = now.year * 12 + (now.month - 1) - (months - 1)
+    year, month = divmod(month_index, 12)
+    return datetime(year, month + 1, 1)
+
+
 def _add_column(conn, table, column, decl):
     # Add a column to an existing table if it is not there yet, so schema changes
     # apply to databases created before the column existed.

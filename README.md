@@ -38,24 +38,21 @@ bot can register; to keep it private, set `ALLOWED_USER_IDS` in `.env` to a
 comma-separated list of Telegram user ids (you can get the ids from
 [@userinfobot](https://t.me/userinfobot)).
 
-### The chart (optional)
+### The web pages (optional)
 
-The "Open chart" button on `/balance` opens a Telegram Mini App, and Telegram
-only opens those over HTTPS. So this part needs a web server: host `plot.html`
-at some HTTPS URL and set it as `WEBAPP_URL` in `.env`. Any static hosting
-works; the page has no backend, the data travels in the URL fragment. Without
-`WEBAPP_URL` everything else runs fine, the button just doesn't appear.
+Two Telegram Mini Apps, and Telegram only opens those over HTTPS, so both need a
+web server. The "Open chart" button on `/balance` opens `plot.html`, which draws
+your cumulative spending month over month; `/ui` opens `ui.html`, which lists
+every operation of a period, expands each one on tap, and filters by month, by
+date range, by type and by text. Host the two files over HTTPS and set them as
+`WEBAPP_URL` and `UI_URL` in `.env`. Either can be left unset: the chart button
+just stops appearing, and `/ui` says it is not configured.
 
-### The expense browser (optional)
-
-`/ui` opens a second Mini App, `ui.html`, which lists every operation of a
-period, expands each one on tap, and filters by month, by date range, by type
-and by text. Host `ui.html` over HTTPS the same way and set it as `UI_URL`.
-
-Unlike the chart, this page holds too much to fit in a URL, so it reads from a
-small read-only API the bot serves on `127.0.0.1:API_PORT` (8081 by default).
-Loopback only: put the same web server in front of it, proxying `/api/` on the
-host that serves `ui.html`. With Apache that is two lines in the TLS vhost:
+Both pages read their figures from a small read-only API the bot serves on
+`127.0.0.1:API_PORT` (8081 by default), which starts along with the bot as soon
+as either page is configured. Loopback only: put the same web server in front of
+it, proxying `/api/` on the host that serves the pages. With Apache that is two
+lines in the TLS vhost:
 
 ```apache
 ProxyPass        /api/ http://127.0.0.1:8081/
@@ -64,8 +61,7 @@ ProxyPassReverse /api/ http://127.0.0.1:8081/
 
 Requests are authenticated with the signed `initData` Telegram gives the Mini
 App, so the API only ever answers for the user Telegram vouched for, and it
-never takes a user id from the request. Without `UI_URL` the API is not started
-and `/ui` says so.
+never takes a user id from the request.
 
 ### Publishing the docs
 

@@ -40,6 +40,7 @@
     window.addEventListener("error", (e) =>
       log("JS error: " + (e.message || e.error), true));
 
+    (async function start() {
     try {
       const tg = window.Telegram && window.Telegram.WebApp;
       if (tg) {
@@ -55,10 +56,21 @@
       }
 
       // Telegram appends its own params to the fragment, so read our named one
-      // (d=...) instead of the whole hash. URLSearchParams decodes it for us.
-      const raw = new URLSearchParams(location.hash.slice(1)).get("d");
-      if (!raw) throw new Error("no data in URL (missing #d=)");
-      const data = JSON.parse(raw);
+      // (m=...) instead of the whole hash. Only the month count travels in the
+      // URL; the figures come from the API, authenticated with the signed
+      // session Telegram hands the page.
+      const params = new URLSearchParams(location.hash.slice(1));
+      const initData = (tg && tg.initData) || params.get("tgWebAppData") || "";
+      const months = params.get("m") || "2";
+
+      log("Loading...");
+      const res = await fetch(`${location.origin}/api/chart?months=${months}`,
+                              { headers: { "X-Telegram-Init-Data": initData } });
+      if (res.status === 401)
+        throw new Error("Not authorised. Open this page from the bot.");
+      if (!res.ok) throw new Error("Request failed (" + res.status + ")");
+      const data = await res.json();
+      log("");
       document.getElementById("title").textContent = data.title || "Expenses";
 
       if (typeof Chart === "undefined")
@@ -176,6 +188,7 @@
     } catch (err) {
       log("Error: " + err.message, true);
     }
+    })();
   </script>
 </body>
 </html>

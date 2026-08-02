@@ -2,12 +2,10 @@ import asyncio
 import calendar
 import functools
 import html
-import json
 import logging
 import math
 import os
 import re
-import urllib.parse
 from datetime import datetime, timedelta
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
@@ -179,13 +177,6 @@ def _days_ago(days):
     return datetime.combine(start_day, datetime.min.time())
 
 
-def _months_ago(months):
-    now = datetime.now()
-    month_index = now.year * 12 + (now.month - 1) - (months - 1)
-    year, month = divmod(month_index, 12)
-    return datetime(year, month + 1, 1)
-
-
 def _add_months(d, k):
     # `d` shifted forward by `k` months, clamping the day to the target month's
     # last day (e.g. 31 Jan + 1 month -> 28 Feb).
@@ -210,7 +201,7 @@ def parse_list_args(args, noun="operations", count_word="Last", default="m 1"):
         return n, None, f"{count_word} {n} {noun}"
     if mode == "m":
         k = number or 1
-        return None, _months_ago(k), "This month" if k == 1 else f"Last {k} months"
+        return None, db.months_ago(k), "This month" if k == 1 else f"Last {k} months"
     k = number or 1
     return None, _days_ago(k), "Today" if k == 1 else f"Last {k} days"
 
@@ -1010,7 +1001,7 @@ async def balance(message: Message, command: CommandObject):
     # One table per month, oldest first; each product's share is over that
     # month's own total.
     for i in range(months, 0, -1):
-        start, end = _months_ago(i), _months_ago(i - 1)
+        start, end = db.months_ago(i), db.months_ago(i - 1)
         summary = db.expense_summary(user_id, start, end)
         if not summary:
             continue
@@ -1034,61 +1025,20 @@ async def balance(message: Message, command: CommandObject):
     )
 
     body = "\n\n".join(sections)
-    markup = build_chart_markup(user_id, months)
+    markup = build_chart_markup(months)
     await message.answer(f"<code>{body}</code>", parse_mode="HTML", reply_markup=markup)
 
 
-def build_chart_markup(user_id, months):
-    # Builds the "Open chart" inline button for a user's cumulative spending. By
-    # default it overlays the current month and the previous one for comparison;
-    # a month count (from "/balance m K") overlays that many months. The data is
-    # computed here and handed to the static page (plot.html) through the URL
-    # fragment, so the page needs no backend and the numbers never reach the web
-    # server's logs. Returns None when plotting is not configured (no WEBAPP_URL).
+def build_chart_markup(months):
+    # Builds the "Open chart" inline button. By default the page overlays the
+    # current month and the previous one for comparison; a month count (from
+    # "/balance m K") overlays that many. Only that count travels in the URL: the
+    # page fetches the figures themselves from the API, the same way ui.html does.
+    # Returns None when plotting is not configured (no WEBAPP_URL).
     if not WEBAPP_URL:
         return None
-
-    # Always at least two months, so the current one has something to compare
-    # against, and at most six, so the data keeps fitting in the button URL.
-    count = min(max(months, 2), 6)
-    today = datetime.now().date()
-
-    # One cumulative daily series per month, most recent first. Each series is a
-    # running total per day from the 1st, empty days filled so the line stays
-    # continuous; the current month stops at today, past months run to month end.
-    series = []
-    for i in range(count):
-        start, end = _months_ago(i + 1), _months_ago(i)
-        totals = {
-            row["day"]: row["total"]
-            for row in db.daily_expense_totals(user_id, start, end)
-        }
-        last = today if i == 0 else (end.date() - timedelta(days=1))
-        labels, values, running = [], [], 0.0
-        day = start.date()
-        while day <= last:
-            running += totals.get(day.isoformat(), 0) / 100
-            labels.append(day.day)
-            values.append(round(running, 2))
-            day += timedelta(days=1)
-        series.append(
-            {"label": start.strftime("%B %Y"), "labels": labels, "values": values}
-        )
-
-    # The current month's total income, drawn as a reference line on the chart.
-    income_cents = sum(
-        row["total"]
-        for row in db.income_summary(user_id, _months_ago(1), _months_ago(0))
-    )
-    payload = {
-        "title": _months_ago(1).strftime("%B %Y"),
-        "series": series,
-        "income": round(income_cents / 100, 2),
-    }
-    # The data rides in the URL fragment as a named parameter (#d=...). Telegram
-    # appends its own fragment parameters when opening the Mini App, so a named
-    # one lets the page pick ours out and ignore the rest.
-    url = f"{WEBAPP_URL}#d={urllib.parse.quote(json.dumps(payload))}"
+    # At least two months, so the current one has something to compare against.
+    url = f"{WEBAPP_URL}#m={max(months, 2)}"
     button = InlineKeyboardButton(text="Open chart", web_app=WebAppInfo(url=url))
     return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
@@ -1127,7 +1077,7 @@ async def incomes(message: Message, command: CommandObject):
     # One table per month, oldest first; each income's share is over that
     # month's own total.
     for i in range(months, 0, -1):
-        start, end = _months_ago(i), _months_ago(i - 1)
+        start, end = db.months_ago(i), db.months_ago(i - 1)
         summary = db.income_summary(user_id, start, end)
         if not summary:
             continue
@@ -1368,7 +1318,9 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
     bot = Bot(token=os.environ["BOT_TOKEN"])
-    if UI_URL:
+    # Both Mini App pages read their figures from the API, so it runs as soon as
+    # either one is configured.
+    if UI_URL or WEBAPP_URL:
         await api.start_web(bot.token, API_PORT, ALLOWED_USER_IDS)
     asyncio.create_task(run_scheduler(bot))
     await dp.start_polling(bot)
