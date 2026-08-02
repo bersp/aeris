@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Aeris</title>
+  <style>
+    /* Telegram's own palette drives the page. The fallbacks only apply outside
+       Telegram (a plain browser), where they follow the OS colour scheme so the
+       page is readable while developing. */
+    :root {
+      --bg: var(--tg-theme-bg-color, #ffffff);
+      --card: var(--tg-theme-secondary-bg-color, #f1f3f5);
+      --text: var(--tg-theme-text-color, #000000);
+      --hint: var(--tg-theme-hint-color, #8b959e);
+      --link: var(--tg-theme-link-color, #2481cc);
+      --accent: var(--tg-theme-button-color, #2481cc);
+      --on-accent: var(--tg-theme-button-text-color, #ffffff);
+      --line: rgba(128, 128, 128, 0.25);
+      /* The inline date column. In rem, not em, so the detail panel below can
+         line up with the product name using the same value. */
+      --date-col: 2.6rem;
+      --row-gap: 10px;
+      --edge: 16px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: var(--tg-theme-bg-color, #17212b);
+        --card: var(--tg-theme-secondary-bg-color, #232e3c);
+        --text: var(--tg-theme-text-color, #ffffff);
+        --hint: var(--tg-theme-hint-color, #7d8b99);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, system-ui, sans-serif;
+      font-size: 16px;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* The header stays put so the active period and its total are always visible
+       while scrolling a long month. */
+    header {
+      position: sticky; top: 0; z-index: 2;
+      background: var(--bg);
+      padding: calc(12px + var(--tg-safe-area-inset-top, 0px)
+                    + var(--tg-content-safe-area-inset-top, 0px)) 0 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .pad { padding: 0 16px; }
+    .period { font-size: 0.8rem; color: var(--hint); }
+    .total { font-size: 1.9rem; font-weight: 650; letter-spacing: -0.02em; margin: 2px 0; }
+    .sub { font-size: 0.8rem; color: var(--hint); }
+    .sub .in { color: var(--link); }
+
+    /* Horizontal chip rows: the month list can grow without ever wrapping. */
+    .chips {
+      display: flex; gap: 6px; overflow-x: auto; padding: 10px 16px 2px;
+      scrollbar-width: none;
+    }
+    .chips::-webkit-scrollbar { display: none; }
+    .chip {
+      flex: 0 0 auto; border: 0; border-radius: 999px;
+      padding: 7px 13px; font-size: 0.85rem; font-family: inherit;
+      background: var(--card); color: var(--text); cursor: pointer;
+    }
+    .chip.on { background: var(--accent); color: var(--on-accent); }
+
+    /* Five types will not fit across a narrow phone, so this row scrolls like
+       the month one rather than squeezing the labels. */
+    .seg { padding-top: 4px; }
+    .seg .chip { padding: 6px 12px; font-size: 0.8rem; }
+
+    .range { display: none; gap: 8px; padding: 10px 16px 0; }
+    .range.on { display: flex; }
+    .range input {
+      flex: 1 1 0; min-width: 0; padding: 8px; font-family: inherit; font-size: 0.85rem;
+      border: 1px solid var(--line); border-radius: 8px;
+      background: var(--card); color: var(--text);
+    }
+
+    .search { padding: 10px 16px 2px; }
+    .search input {
+      width: 100%; padding: 9px 12px; font-family: inherit; font-size: 0.9rem;
+      border: 0; border-radius: 10px; background: var(--card); color: var(--text);
+    }
+
+    details.byproduct { border-bottom: 1px solid var(--line); }
+    details.byproduct > summary {
+      padding: 12px 16px; font-size: 0.85rem; color: var(--hint); cursor: pointer;
+    }
+    .pbar { padding: 0 16px 12px; }
+    .prow { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 0.85rem; }
+    .prow .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .prow .amt { flex: 0 0 auto; color: var(--hint); font-variant-numeric: tabular-nums; }
+    .track { height: 3px; border-radius: 2px; background: var(--card); margin-top: 3px; }
+    .fill { height: 100%; border-radius: 2px; background: var(--accent); }
+
+    /* Only months get a heading. Days are marked inline on the row itself, which
+       keeps a long month scannable instead of chopped into dozens of blocks. */
+    .month {
+      display: flex; justify-content: space-between;
+      padding: 16px 16px 6px; font-size: 0.75rem; color: var(--hint);
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .section {
+      padding: 16px 16px 6px; font-size: 0.75rem; color: var(--hint);
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .op {
+      display: flex; align-items: baseline; gap: var(--row-gap);
+      padding: 11px var(--edge); cursor: pointer;
+      border-top: 1px solid var(--line);
+    }
+    .op:active { background: var(--card); }
+    /* Fixed width so the names line up whether or not the date is repeated. */
+    .op .date {
+      flex: 0 0 var(--date-col); font-size: 0.75rem; color: var(--hint);
+      font-variant-numeric: tabular-nums;
+    }
+    .op .name { flex: 1 1 auto; min-width: 0; }
+    .op .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .op .note { font-size: 0.78rem; color: var(--hint); overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+    .op .amt { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 550; }
+    .op.income .amt { color: var(--link); }
+    .op.zero .amt { color: var(--hint); font-weight: 400; }
+    .op.soon .title, .op.soon .amt { opacity: 0.75; }
+    .tag {
+      font-size: 0.68rem; padding: 1px 5px; border-radius: 5px;
+      background: var(--card); color: var(--hint); margin-left: 6px;
+      vertical-align: 1px;
+    }
+
+    /* Indented past the date column so it starts under the product name, and
+       tappable anywhere to close the row it belongs to. */
+    .detail {
+      padding: 2px var(--edge) 14px calc(var(--edge) + var(--date-col) + var(--row-gap));
+      font-size: 0.85rem; cursor: pointer;
+    }
+    .detail:active { background: var(--card); }
+    .detail dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; }
+    .detail dt { color: var(--hint); }
+    .detail dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+
+    .empty, #status { padding: 28px 16px; text-align: center; color: var(--hint); font-size: 0.85rem; }
+    #status { padding: 12px 16px; text-align: left; white-space: pre-wrap; }
+    .error { color: #e53935 !important; }
+    body.busy .list { opacity: 0.45; }
+  </style>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <header>
+    <div class="pad">
+      <div class="period" id="period">Loading</div>
+      <div class="total" id="total">&nbsp;</div>
+      <div class="sub" id="sub">&nbsp;</div>
+    </div>
+    <div class="chips" id="months"></div>
+    <div class="range" id="range">
+      <input type="date" id="from" aria-label="From" />
+      <input type="date" id="to" aria-label="To" />
+    </div>
+    <div class="chips seg" id="types"></div>
+    <div class="search"><input type="search" id="search" placeholder="Search" /></div>
+  </header>
+
+  <details class="byproduct" id="byproduct" hidden>
+    <summary>By product</summary>
+    <div class="pbar" id="products"></div>
+  </details>
+
+  <div class="list" id="list"></div>
+  <pre id="status"></pre>
+
+  <script>
+    const status = document.getElementById("status");
+    function log(msg, isError) {
+      status.textContent = msg || "";
+      status.className = isError ? "error" : "";
+    }
+    window.addEventListener("error", (e) =>
+      log("JS error: " + (e.message || e.error), true));
+
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      // Go edge-to-edge so it feels like an app screen, not a web viewer.
+      // Falls back to the expanded sheet on clients without fullscreen.
+      try { if (tg.requestFullscreen) tg.requestFullscreen(); } catch (e) {}
+      // Match Telegram's own header and background to the page so the webview
+      // blends into the chat instead of looking like a separate window.
+      if (tg.setHeaderColor) tg.setHeaderColor("bg_color");
+      if (tg.setBackgroundColor) tg.setBackgroundColor("bg_color");
+    }
+    const tap = () => {
+      try { tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged(); } catch (e) {}
+    };
+
+    // Telegram hands the signed session to the page, and also leaves it in the
+    // fragment as tgWebAppData. Reading both means the page works when opened
+    // with a fragment directly, which is how it gets tested outside Telegram.
+    const INIT_DATA =
+      (tg && tg.initData) ||
+      new URLSearchParams(location.hash.slice(1)).get("tgWebAppData") ||
+      "";
+
+    const API = location.origin + "/api/";
+    const cache = new Map();
+    const state = { meta: null, from: null, to: null, label: "", ops: [],
+                    type: "all", query: "", open: null };
+
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    // Product names are typed as one token, with underscores standing in for the
+    // spaces they are shown with.
+    const pretty = (s) => String(s || "").replace(/_/g, " ");
+    // Amounts are integer cents everywhere in Aeris; grouping matters here
+    // because the numbers run large.
+    const money = (cents) => "$" + (cents / 100).toLocaleString(undefined,
+      { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const asDate = (iso) => new Date(iso + "T00:00:00");
+    const MONTH = { month: "short" };
+
+    async function get(path, params) {
+      const url = new URL(API + path);
+      Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
+      const res = await fetch(url, { headers: { "X-Telegram-Init-Data": INIT_DATA } });
+      if (res.status === 401) throw new Error("Not authorised. Open this page from the bot.");
+      if (!res.ok) throw new Error("Request failed (" + res.status + ")");
+      return res.json();
+    }
+
+    async function load(from, to, label) {
+      state.from = from; state.to = to; state.label = label; state.open = null;
+      const key = from + "|" + to;
+      if (cache.has(key)) { state.ops = cache.get(key); render(); return; }
+      document.body.classList.add("busy");
+      log("Loading...");
+      try {
+        const data = await get("operations", { from, to });
+        cache.set(key, data.operations);
+        state.ops = data.operations;
+        log("");
+      } catch (err) {
+        state.ops = [];
+        log(err.message, true);
+      } finally {
+        document.body.classList.remove("busy");
+        render();
+      }
+    }
+
+    // --- filters -----------------------------------------------------------
+
+    function monthRanges() {
+      // One entry per month from the first operation to today, newest first.
+      const first = asDate(state.meta.first || state.meta.today);
+      const today = asDate(state.meta.today);
+      const out = [];
+      let cur = new Date(today.getFullYear(), today.getMonth(), 1);
+      while (cur >= new Date(first.getFullYear(), first.getMonth(), 1)) {
+        const end = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+        // Short label for the chip, which is tight on space and mostly reads
+        // within the current year; full one for the header.
+        out.push({
+          from: iso(cur),
+          to: iso(end > today ? today : end),
+          label: cur.toLocaleDateString(undefined, MONTH) +
+            (cur.getFullYear() === today.getFullYear()
+              ? "" : " " + String(cur.getFullYear()).slice(2)),
+          title: cur.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+        });
+        cur = new Date(cur.getFullYear(), cur.getMonth() - 1, 1);
+      }
+      return out;
+    }
+    const iso = (d) => d.getFullYear() + "-" +
+      String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+
+    function buildChips() {
+      const months = monthRanges();
+      const host = document.getElementById("months");
+      host.innerHTML = "";
+      months.forEach((m, i) => {
+        host.appendChild(chip(i === 0 ? "This month" : m.label, () => {
+          document.getElementById("range").classList.remove("on");
+          load(m.from, m.to, m.title);
+        }));
+      });
+      host.appendChild(chip("All", () => {
+        document.getElementById("range").classList.remove("on");
+        load(state.meta.first || state.meta.today, state.meta.today, "All time");
+      }));
+      host.appendChild(chip("Range", () => {
+        const box = document.getElementById("range");
+        box.classList.toggle("on");
+        document.getElementById("from").value = state.from;
+        document.getElementById("to").value = state.to;
+      }));
+
+      const types = document.getElementById("types");
+      types.innerHTML = "";
+      [["all", "All"], ["expense", "Expenses"], ["income", "Incomes"],
+       ["payment", "Payments"], ["scheduled", "Scheduled"]]
+        .forEach(([value, text]) => types.appendChild(chip(text, () => {
+          state.type = value; state.open = null; render();
+        }, () => state.type === value)));
+    }
+
+    function chip(text, onClick, isOn) {
+      const el = document.createElement("button");
+      el.className = "chip";
+      el.textContent = text;
+      el.dataset.on = isOn ? "1" : "";
+      el._isOn = isOn;
+      el.addEventListener("click", () => { tap(); onClick(); markChips(); });
+      return el;
+    }
+    function markChips() {
+      // Month chips track the loaded range, type chips track their own predicate.
+      const months = monthRanges();
+      const host = document.getElementById("months").children;
+      const active = state.from + "|" + state.to;
+      let matched = false;
+      months.forEach((m, i) => {
+        const on = m.from + "|" + m.to === active;
+        matched = matched || on;
+        host[i].classList.toggle("on", on);
+      });
+      const all = (state.meta.first || state.meta.today) + "|" + state.meta.today;
+      if (host[months.length]) {
+        host[months.length].classList.toggle("on", active === all);
+        matched = matched || active === all;
+      }
+      // Anything that is neither a whole month nor the full history came from the
+      // date pickers, so the Range chip is what is active.
+      if (host[months.length + 1]) host[months.length + 1].classList.toggle("on", !matched);
+      Array.from(document.getElementById("types").children).forEach((el) =>
+        el.classList.toggle("on", el._isOn && el._isOn()));
+    }
+
+    function visible() {
+      const q = state.query.trim().toLowerCase();
+      // Scheduled expenses are their own tab. They are due in the future, so the
+      // month and range filters would hide them; the tab shows every pending one
+      // and the search still applies.
+      const pool = state.type === "scheduled"
+        ? (state.meta.scheduled || []).map((s) => ({ ...s, kind: "scheduled" }))
+        : state.ops;
+      return pool.filter((o) => {
+        if (state.type !== "all" && state.type !== "scheduled" && o.kind !== state.type)
+          return false;
+        if (!q) return true;
+        const hay = [o.product, o.description, o.name, o.payer, o.payee, o.added_by]
+          .concat(o.consumers || []).join(" ").replace(/_/g, " ").toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    // --- rendering ---------------------------------------------------------
+
+    function summary(ops) {
+      // The headline follows the type filter, so the big number always names
+      // something real instead of adding incomes to expenses.
+      if (state.type === "income") {
+        return { value: sum(ops, "amount"), label: "received", income: 0 };
+      }
+      if (state.type === "payment") {
+        return { value: sum(ops, "amount"), label: "transferred", income: 0 };
+      }
+      if (state.type === "scheduled") {
+        return { value: sum(ops, "share"), label: "scheduled", income: 0 };
+      }
+      const spent = ops.filter((o) => o.kind === "expense")
+        .reduce((t, o) => t + o.share, 0);
+      const income = ops.filter((o) => o.kind === "income")
+        .reduce((t, o) => t + o.amount, 0);
+      return { value: spent, label: "spent", income };
+    }
+    const sum = (ops, key) => ops.reduce((t, o) => t + (o[key] || 0), 0);
+
+    function render() {
+      const ops = visible();
+      const { value, label, income } = summary(ops);
+      const days = Math.max(1, Math.round(
+        (asDate(state.to) - asDate(state.from)) / 86400000) + 1);
+
+      // The scheduled tab ignores the period, so it names itself instead, and a
+      // daily average over a future window would mean nothing.
+      const future = state.type === "scheduled";
+      document.getElementById("period").textContent = future ? "Upcoming" : state.label;
+      document.getElementById("total").textContent = money(value);
+      const bits = [label, ops.length + (ops.length === 1 ? " operation" : " operations")];
+      if (!future) bits.push(money(Math.round(value / days)) + "/day");
+      document.getElementById("sub").innerHTML = esc(bits.join(" · ")) +
+        (income ? ' · <span class="in">+' + esc(money(income)) + " in</span>" : "");
+
+      renderProducts(ops);
+      renderList(ops);
+      markChips();
+    }
+
+    function renderProducts(ops) {
+      // Expenses only, collapsed the way /balance collapses them: a product the
+      // user has put in a group reports under the group name.
+      const totals = new Map();
+      ops.filter((o) => o.kind === "expense" && o.share)
+        .forEach((o) => {
+          const key = pretty(o.group || o.product);
+          totals.set(key, (totals.get(key) || 0) + o.share);
+        });
+      const box = document.getElementById("byproduct");
+      if (!totals.size) { box.hidden = true; return; }
+      box.hidden = false;
+      const rows = Array.from(totals).sort((a, b) => b[1] - a[1]);
+      const top = rows[0][1];
+      document.getElementById("products").innerHTML = rows.map(([name, total]) => `
+        <div>
+          <div class="prow">
+            <span class="nm">${esc(name)}</span>
+            <span class="amt">${esc(money(total))}</span>
+          </div>
+          <div class="track"><div class="fill" style="width:${(total / top) * 100}%"></div></div>
+        </div>`).join("");
+    }
+
+    function renderList(ops) {
+      const list = document.getElementById("list");
+      if (!ops.length) {
+        list.innerHTML = '<div class="empty">' + (state.type === "scheduled"
+          ? "Nothing scheduled." : "No operations in this period.") + "</div>";
+        return;
+      }
+      // A month heading only earns its place when the view actually spans more
+      // than one; inside a single month it would just repeat the header.
+      const months = new Set(ops.map((o) => o.date.slice(0, 7)));
+      let html = "";
+      let lastMonth = null;
+      let lastDay = null;
+      ops.forEach((o) => {
+        const month = o.date.slice(0, 7);
+        if (months.size > 1 && month !== lastMonth) {
+          // Summed the same way the headline is, so the two always agree.
+          const total = summary(ops.filter((x) => x.date.startsWith(month))).value;
+          html += `<div class="month"><span>${esc(asDate(month + "-01")
+            .toLocaleDateString(undefined, { month: "long", year: "numeric" }))}</span>` +
+            `<span>${total ? esc(money(total)) : ""}</span></div>`;
+          lastMonth = month;
+          lastDay = null;
+        }
+        // The date is printed once per day and left blank on the rows under it,
+        // so a day reads as a block without needing a heading of its own.
+        html += row(o, o.date === lastDay ? "" : dayLabel(o.date));
+        lastDay = o.date;
+      });
+      list.innerHTML = html;
+    }
+
+    const dayLabel = (iso) => Number(iso.slice(8, 10)) + "/" + Number(iso.slice(5, 7));
+
+    function row(o, date) {
+      let title, amount, cls = "";
+      if (o.kind === "income") {
+        title = pretty(o.name); amount = "+" + money(o.amount); cls = "income";
+      } else if (o.kind === "payment") {
+        title = o.payer + " → " + o.payee; amount = money(o.amount);
+      } else {
+        title = pretty(o.product);
+        amount = money(o.share);
+        if (o.kind === "scheduled") {
+          cls = "soon";
+          title += `<span class="tag">${o.plan ? esc(o.plan) : "scheduled"}</span>`;
+        }
+        if (o.consumers.length > 1) title += `<span class="tag">/${o.consumers.length}</span>`;
+        if (!o.share) { cls += " zero"; title += '<span class="tag">for others</span>'; }
+      }
+      const note = o.description
+        ? `<div class="note">${esc(o.description)}</div>` : "";
+      const open = state.open === o.id;
+      return `<div class="op ${cls}" data-id="${esc(o.id)}">
+          <div class="date">${esc(date == null ? dayLabel(o.date) : date)}</div>
+          <div class="name"><div class="title">${title}</div>${note}</div>
+          <div class="amt">${esc(amount)}</div>
+        </div>` + (open ? detail(o) : "");
+    }
+
+
+    function detail(o) {
+      // dd/mm/yy, the way the bot writes dates, rather than whatever order the
+      // device locale would pick.
+      const rows = [["Id", "#" + o.id],
+                    [o.kind === "scheduled" ? "Due" : "Date",
+                     o.date.slice(8, 10) + "/" + o.date.slice(5, 7) + "/" + o.date.slice(2, 4)]];
+      if (o.kind === "scheduled") {
+        rows.push(["Price", money(o.price)]);
+        if (o.consumers.length > 1 || !o.share) rows.push(["Your share", money(o.share)]);
+        rows.push(["Plan", o.plan ? "installment " + o.plan : "one-off"]);
+        rows.push(["Paid by", o.payer]);
+        rows.push(["For", o.consumers.join(", ") || "—"]);
+        if (o.added_by && o.added_by !== o.payer) rows.push(["Added by", o.added_by]);
+        if (o.description) rows.push(["Note", o.description]);
+      } else if (o.kind === "expense") {
+        rows.push(["Price", money(o.price)]);
+        if (o.consumers.length > 1 || !o.share) rows.push(["Your share", money(o.share)]);
+        rows.push(["Paid by", o.payer]);
+        rows.push(["For", o.consumers.join(", ") || "—"]);
+        if (o.group) rows.push(["Group", pretty(o.group)]);
+        if (o.added_by && o.added_by !== o.payer) rows.push(["Added by", o.added_by]);
+        if (o.description) rows.push(["Note", o.description]);
+      } else if (o.kind === "income") {
+        rows.push(["Amount", money(o.amount)]);
+      } else {
+        rows.push(["Amount", money(o.amount)]);
+        rows.push(["From", o.payer]);
+        rows.push(["To", o.payee]);
+      }
+      return '<div class="detail"><dl>' + rows.map(([k, v]) =>
+        `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") + "</dl></div>";
+    }
+
+    // --- wiring ------------------------------------------------------------
+
+    document.getElementById("list").addEventListener("click", (e) => {
+      // Anywhere on an open detail closes it, so dismissing does not mean
+      // hunting for the row that opened it.
+      if (e.target.closest(".detail")) {
+        tap();
+        state.open = null;
+        renderList(visible());
+        return;
+      }
+      const el = e.target.closest(".op");
+      if (!el) return;
+      tap();
+      state.open = state.open === el.dataset.id ? null : el.dataset.id;
+      renderList(visible());
+    });
+
+    document.getElementById("search").addEventListener("input", (e) => {
+      state.query = e.target.value; state.open = null; render();
+    });
+
+    ["from", "to"].forEach((id) =>
+      document.getElementById(id).addEventListener("change", () => {
+        const from = document.getElementById("from").value;
+        const to = document.getElementById("to").value;
+        if (from && to && from <= to) load(from, to, from + " → " + to);
+      }));
+
+    (async function start() {
+      try {
+        state.meta = await get("meta");
+        const bounds = document.querySelectorAll("#range input");
+        bounds.forEach((el) => {
+          el.min = state.meta.first || state.meta.today;
+          el.max = state.meta.today;
+        });
+        buildChips();
+        if (!state.meta.first) {
+          state.from = state.to = state.meta.today;
+          state.label = "This month";
+          render();
+          return;
+        }
+        const current = monthRanges()[0];
+        await load(current.from, current.to, current.title);
+      } catch (err) {
+        log(err.message, true);
+      }
+    })();
+  </script>
+</body>
+</html>

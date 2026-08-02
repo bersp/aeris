@@ -640,11 +640,34 @@ def remove_operation(user_id, suffix):
         }
 
 
-def recent_operations(user_id, limit=6, since=None):
+def first_operation_date(user_id):
+    # The YYYY-MM-DD of the user's oldest operation of any kind, or None when they
+    # have none yet. Bounds how far back the web UI offers to look.
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT MIN(created_at) AS first FROM (
+                SELECT e.created_at FROM expenses e
+                WHERE e.payer_id = ?
+                   OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
+                UNION ALL
+                SELECT created_at FROM incomes  WHERE user_id  = ?
+                UNION ALL
+                SELECT created_at FROM payments WHERE payer_id = ? OR payee_id = ?
+            )
+            """,
+            (user_id, user_id, user_id, user_id, user_id),
+        ).fetchone()
+    return row["first"][:10] if row["first"] else None
+
+
+def recent_operations(user_id, limit=6, since=None, until=None):
     # Operations the user takes part in (as payer/consumer of an expense, or as
-    # payer/payee of a payment), ordered oldest first. With `since` only the ones
-    # from that datetime on are kept; with `limit` only the last that many. A
-    # payment is shown as a "pay" product whose single consumer is the payee.
+    # payer/payee of a payment), ordered oldest first. `since`/`until` bound the
+    # window (since inclusive, until exclusive); with `limit` only the last that
+    # many are kept. A payment is shown as a "pay" product whose single consumer
+    # is the payee, so each operation also carries its `kind` for callers that
+    # need to tell the two apart.
     with _connect() as conn:
         expenses = conn.execute(
             """
@@ -671,6 +694,7 @@ def recent_operations(user_id, limit=6, since=None):
             ]
             operations.append(
                 {
+                    "kind": "expense",
                     "id": expense["id"],
                     "created_at": expense["created_at"],
                     "product": expense["product"],
@@ -694,6 +718,7 @@ def recent_operations(user_id, limit=6, since=None):
         for payment in payments:
             operations.append(
                 {
+                    "kind": "payment",
                     "id": payment["id"],
                     "created_at": payment["created_at"],
                     "product": "pay",
@@ -709,6 +734,9 @@ def recent_operations(user_id, limit=6, since=None):
     if since is not None:
         cutoff = since.isoformat()
         operations = [op for op in operations if op["created_at"] >= cutoff]
+    if until is not None:
+        cutoff = until.isoformat()
+        operations = [op for op in operations if op["created_at"] < cutoff]
     if limit is not None:
         operations = operations[-limit:]
     return operations
@@ -771,10 +799,10 @@ def daily_expense_totals(user_id, since=None, until=None):
         return conn.execute(query, params).fetchall()
 
 
-def recent_incomes(user_id, limit=6, since=None):
+def recent_incomes(user_id, limit=6, since=None, until=None):
     # The user's individual incomes, ordered oldest first so the latest is printed
-    # last. With `since` only the ones from that datetime on are kept; with `limit`
-    # only the last that many.
+    # last. `since`/`until` bound the window (since inclusive, until exclusive);
+    # with `limit` only the last that many are kept.
     query = (
         "SELECT id, created_at, description, amount FROM incomes WHERE user_id = ?"
     )
@@ -782,6 +810,9 @@ def recent_incomes(user_id, limit=6, since=None):
     if since is not None:
         query += " AND created_at >= ?"
         params.append(since.isoformat())
+    if until is not None:
+        query += " AND created_at < ?"
+        params.append(until.isoformat())
     query += " ORDER BY created_at"
     with _connect() as conn:
         incomes = [dict(row) for row in conn.execute(query, params)]

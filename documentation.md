@@ -74,6 +74,12 @@ Same entries, fully detailed. Short: `/dlist`.
 
 Expenses by month, who owes whom, and your cash. A month count goes back further: `/balance m 3`. The Open chart button plots your spending day by day, overlaying the months shown (between two and six), with your monthly income as a reference line.
 
+```
+/ui
+```
+
+Opens a web page listing everything you have logged, newest first, with the date on each entry. Tap one to see its full detail: price, your share, who paid, who it was for, and its id; tapping the detail closes it again. Filter by month, by a date range you pick, by type, or by typing part of a product or note. The Scheduled tab lists what is still coming, installments included, ignoring the period the rest of the page is showing. There is also a breakdown by product for whatever period you are looking at.
+
 ## Settling up
 
 ```

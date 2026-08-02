@@ -21,6 +21,7 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+import api
 import db
 
 load_dotenv()
@@ -30,6 +31,14 @@ dp = Dispatcher()
 # Public HTTPS URL of the Mini App page (plot.html). A Telegram Web App button
 # only opens HTTPS URLs, so this is required for the chart button in /balance.
 WEBAPP_URL = os.environ.get("WEBAPP_URL")
+
+# Public HTTPS URL of the expense browser Mini App (ui.html), opened by /ui, and
+# the port its read-only API listens on. Unlike the chart, this page holds far too
+# much data to fit in a URL, so it reads from that API instead. The API is bound
+# to loopback and expects the web server serving ui.html to proxy it; setting
+# UI_URL is what turns both halves on.
+UI_URL = os.environ.get("UI_URL")
+API_PORT = int(os.environ.get("API_PORT", 8081))
 
 # Instant View documentation sent by /start and /help. Publish your own page
 # from documentation.md with publish_telegraph.py and set its URL in .env; a
@@ -854,6 +863,30 @@ def build_chart_markup(user_id, months):
     return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
+@dp.message(Command("ui"))
+async def ui(message: Message, command: CommandObject = None):
+    # Opens the expense browser Mini App, where operations can be listed, expanded
+    # and filtered by month or by an arbitrary range. The page carries no data of
+    # its own; it reads the API. Unlike the chart button, which rides on a message
+    # that stands on its own, this command is nothing but the button, so an
+    # unconfigured URL has to say so rather than send an empty reply.
+    if not UI_URL:
+        await reply(message, "Web UI is not configured.")
+        return
+    first = db.first_operation_date(message.from_user.id)
+    label = (
+        f"🌐 Operations from {day_from_iso(first)} to today."
+        if first
+        else "🌐 No operations yet."
+    )
+    button = InlineKeyboardButton(text="Open expenses", web_app=WebAppInfo(url=UI_URL))
+    await message.answer(
+        f"<code>{html.escape(label)}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
+    )
+
+
 @dp.message(Command("incomes"))
 @usage("/incomes [m K]")
 async def incomes(message: Message, command: CommandObject):
@@ -1047,6 +1080,7 @@ _COMMAND_GROUPS = (
     (scheduled, ("scheduled",)),
     (income, ("income", "inc")),
     (balance, ("balance",)),
+    (ui, ("ui",)),
     (incomes, ("incomes",)),
     (detailed_incomes, ("detailedincomes", "dincomes")),
     (alias, ("alias",)),
@@ -1103,6 +1137,8 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
     bot = Bot(token=os.environ["BOT_TOKEN"])
+    if UI_URL:
+        await api.start_web(bot.token, API_PORT, ALLOWED_USER_IDS)
     asyncio.create_task(run_scheduler(bot))
     await dp.start_polling(bot)
 
