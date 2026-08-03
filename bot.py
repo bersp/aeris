@@ -458,7 +458,8 @@ def operation_detail(item):
         return scheduled_detail(item, plan_label(item))
     if item["kind"] == "income":
         return income_detail(
-            day_from_id(item["id"]), item["id"], item["description"], item["amount"]
+            day_from_id(item["id"]), item["id"], item["description"], item["amount"],
+            item["note"],
         )
     if item["kind"] == "payment":
         return payment_detail(
@@ -524,7 +525,8 @@ def modified_detail(item, change, kind, operation_id):
     # same way the real thing is.
     if kind == "income":
         return income_detail(
-            day_str(change["when"]), operation_id, change["name"], change["amount"]
+            day_str(change["when"]), operation_id, change["name"], change["amount"],
+            change["note"],
         )
     return expense_detail(
         day_str(change["when"]), operation_id, change["display_product"], change["price"],
@@ -623,7 +625,8 @@ async def on_modify_action(query: CallbackQuery):
     if kind == "income":
         new_kind = "income"
         db.add_income(
-            creator_id, change["amount"], change["name"], change["when"], income_id=keep_id
+            creator_id, change["amount"], change["name"], change["when"],
+            income_id=keep_id, note=change["note"],
         )
     else:
         plan = (item.get("plan_id"), item.get("plan_index"), item.get("plan_total"))
@@ -734,10 +737,13 @@ def expense_detail(day, op_id, product, price, description, buyer, consumers, ad
     return "\n".join(lines)
 
 
-def income_detail(day, op_id, name, amount):
-    # An income in the same style as expense_detail: header line plus one line
-    # with the income name and amount.
-    return f"▸ {day}   #{op_id}\n- {pretty_product(name)} — ${format_price(amount)}"
+def income_detail(day, op_id, name, amount, note=None):
+    # An income in the same style as expense_detail: header line, then the income
+    # name and amount, then its note when it has one.
+    lines = [f"▸ {day}   #{op_id}", f"- {pretty_product(name)} — ${format_price(amount)}"]
+    if note:
+        lines.append(f"- {note}")
+    return "\n".join(lines)
 
 
 def payment_detail(day, op_id, payer_name, payee_name, amount):
@@ -918,7 +924,8 @@ async def detailed_incomes(message: Message, command: CommandObject):
         await reply(message, "No incomes.")
         return
     blocks = [
-        income_detail(day_from_id(inc["id"]), inc["id"], inc["description"], inc["amount"])
+        income_detail(day_from_id(inc["id"]), inc["id"], inc["description"],
+                      inc["amount"], inc["note"])
         for inc in incomes
     ]
     body = "\n\n".join(blocks)
@@ -938,9 +945,18 @@ async def scheduled(message: Message, command: CommandObject = None):
 
 
 def parse_income_input(args, current=None):
-    # Parse the "[date] <name> <amount>" form used by /income, and by /modify when
-    # rewriting one. As with expenses, `current` makes the amount optional and the
-    # date default to the one it already has.
+    # Parse the "[date] <name[(note)]> <amount>" form used by /income, and by
+    # /modify when rewriting one. As with expenses, `current` makes the amount
+    # optional and the date default to the one it already has.
+
+    # The note may contain spaces, so pull it out before splitting, exactly as
+    # parse_expense_input does. An empty "()" clears one that is already there.
+    match = re.search(r"\(([^)]*)\)", args)
+    if match:
+        note = match.group(1).strip() or None
+        args = args[: match.start()] + args[match.end() :]
+    else:
+        note = current["note"] if current else None
     parts = args.split()
 
     # Optional date as the first argument (today if omitted).
@@ -959,7 +975,7 @@ def parse_income_input(args, current=None):
         amount = current["amount"]
     else:
         raise IndexError
-    return {"when": when, "name": name, "amount": amount}
+    return {"when": when, "name": name, "amount": amount, "note": note}
 
 
 @dp.message(Command("income", "inc"))
@@ -970,8 +986,10 @@ async def income(message: Message, command: CommandObject):
     except InputError as error:
         await reply(message, str(error))
         return
-    income_id = db.add_income(message.from_user.id, i["amount"], i["name"], i["when"])
-    detail = income_detail(day_str(i["when"]), income_id, i["name"], i["amount"])
+    income_id = db.add_income(
+        message.from_user.id, i["amount"], i["name"], i["when"], note=i["note"]
+    )
+    detail = income_detail(day_str(i["when"]), income_id, i["name"], i["amount"], i["note"])
     await reply(message, f"Added Income\n{detail}")
 
 

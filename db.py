@@ -27,10 +27,13 @@ def months_ago(months):
 
 def _add_column(conn, table, column, decl):
     # Add a column to an existing table if it is not there yet, so schema changes
-    # apply to databases created before the column existed.
+    # apply to databases created before the column existed. True when it was just
+    # added, for the one-off backfills that go with a new column.
     columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
-    if column not in columns:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    if column in columns:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    return True
 
 
 def init_db():
@@ -111,10 +114,29 @@ def init_db():
                 user_id INTEGER NOT NULL,
                 amount INTEGER NOT NULL,
                 description TEXT NOT NULL,
+                note TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
+        # `description` holds an income's name; `note` is the counterpart of an
+        # expense's description. It came later, and until it existed the parser
+        # had nowhere to put a "name(note)", so it kept the whole thing as the
+        # name. Split those as the column appears, otherwise they stay a separate
+        # income source forever.
+        if _add_column(conn, "incomes", "note", "TEXT"):
+            conn.execute(
+                """
+                UPDATE incomes
+                   SET note = nullif(trim(substr(description,
+                                                 instr(description, '(') + 1,
+                                                 length(description)
+                                                   - instr(description, '(') - 1)), ''),
+                       description = trim(substr(description, 1,
+                                                 instr(description, '(') - 1))
+                 WHERE description LIKE '%(%)'
+                """
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS payments (
@@ -410,14 +432,17 @@ def add_expense(
     return expense_id
 
 
-def add_income(user_id, amount, description, when=None, income_id=None):
+def add_income(user_id, amount, description, when=None, income_id=None, note=None):
     when = when or datetime.now()
     income_id = income_id or new_id(when)
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO incomes (id, user_id, amount, description, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (income_id, user_id, amount, description, when.isoformat(timespec="microseconds")),
+            "INSERT INTO incomes (id, user_id, amount, description, note, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                income_id, user_id, amount, description, note,
+                when.isoformat(timespec="microseconds"),
+            ),
         )
     return income_id
 
@@ -565,7 +590,7 @@ _OPERATION_SCOPES = {
         "e.",
     ),
     "income": (
-        "SELECT seq, id, created_at, amount, description FROM incomes WHERE user_id = ?",
+        "SELECT seq, id, created_at, amount, description, note FROM incomes WHERE user_id = ?",
         1,
         "",
     ),
@@ -610,6 +635,7 @@ def _operation_dict(conn, kind, row):
             "id": row["id"],
             "created_at": row["created_at"],
             "description": row["description"],
+            "note": row["note"],
             "amount": row["amount"],
         }
 
@@ -870,7 +896,7 @@ def recent_incomes(user_id, limit=6, since=None, until=None):
     # last. `since`/`until` bound the window (since inclusive, until exclusive);
     # with `limit` only the last that many are kept.
     query = (
-        "SELECT id, created_at, description, amount FROM incomes WHERE user_id = ?"
+        "SELECT id, created_at, description, note, amount FROM incomes WHERE user_id = ?"
     )
     params = [user_id]
     if since is not None:

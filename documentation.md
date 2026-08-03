@@ -103,10 +103,10 @@ Record a cash payment against a debt. `/pay Bob 5000` means you paid Bob. A paym
 ## Income
 
 ```
-/income [date] <name> <amount>
+/income [date] <name[(note)]> <amount>
 ```
 
-Money coming in, also `/inc`: `/inc salary 300000`. Dates work as in expenses.
+Money coming in, also `/inc`: `/inc salary 300000`. Dates and notes work as in expenses, so `/inc teaching(bonus) 120000` records a note without turning it into a separate source: incomes are grouped by name, and the note is left out of the grouping.
 
 ```
 /incomes [m [K]]

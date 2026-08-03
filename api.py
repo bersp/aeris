@@ -170,6 +170,7 @@ async def operations(request, user_id):
                     "kind": "income",
                     "id": inc["id"],
                     "name": inc["description"],
+                    "description": inc["note"],
                     "amount": inc["amount"],
                 },
             )

@@ -517,6 +517,7 @@
         if (o.description) rows.push(["Note", o.description]);
       } else if (o.kind === "income") {
         rows.push(["Amount", money(o.amount)]);
+        if (o.description) rows.push(["Note", o.description]);
       } else {
         rows.push(["Amount", money(o.amount)]);
         rows.push(["From", o.payer]);
