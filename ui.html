@@ -94,11 +94,16 @@
     details.byproduct > summary {
       padding: 12px 16px; font-size: 0.85rem; color: var(--hint); cursor: pointer;
     }
-    .pbar { padding: 0 16px 12px; }
-    .prow { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 0.85rem; }
+    .pbar { padding: 0 16px 4px; }
+    /* A bar belongs to the name above it, so it sits close to it and the gap to
+       the next product is the wider one. */
+    .prow { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 0.85rem; }
     .prow .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .prow .amt { flex: 0 0 auto; color: var(--hint); font-variant-numeric: tabular-nums; }
-    .track { height: 3px; border-radius: 2px; background: var(--card); margin-top: 3px; }
+    .track {
+      height: 3px; border-radius: 2px; background: var(--card);
+      margin-top: 3px; margin-bottom: 14px;
+    }
     .fill { height: 100%; border-radius: 2px; background: var(--accent); }
 
     /* Only months get a heading. Days are marked inline on the row itself, which
@@ -421,12 +426,16 @@
       if (!totals.size) { box.hidden = true; return; }
       box.hidden = false;
       const rows = Array.from(totals).sort((a, b) => b[1] - a[1]);
+      // The bar is scaled against the biggest line, so the ranking stays legible
+      // instead of collapsing into slivers; the percentage next to the amount is
+      // of the whole, the same figure /balance prints.
       const top = rows[0][1];
+      const whole = rows.reduce((sum, [, total]) => sum + total, 0);
       document.getElementById("products").innerHTML = rows.map(([name, total]) => `
         <div>
           <div class="prow">
             <span class="nm">${esc(name)}</span>
-            <span class="amt">${esc(money(total))}</span>
+            <span class="amt">${esc(money(total))} (${Math.round((total / whole) * 100)}%)</span>
           </div>
           <div class="track"><div class="fill" style="width:${(total / top) * 100}%"></div></div>
         </div>`).join("");
