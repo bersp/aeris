@@ -545,13 +545,16 @@ def mark_scheduled_notified(seq):
         )
 
 
-def pop_scheduled(scheduled_id):
-    # Read a scheduled expense by id and delete it (with its consumers). Returns
-    # its dict, or None if it was already resolved. Deleting up front keeps a
-    # double Add/Reject tap from recording it twice.
+def pop_scheduled(scheduled_id, user_id):
+    # Read the scheduled expense `user_id` created and delete it (with its
+    # consumers). Returns its dict, or None if it was already resolved or belongs
+    # to someone else. Deleting up front keeps a double Add/Reject tap from
+    # recording it twice, and scoping to the creator means the id in a button is
+    # not enough on its own to resolve one.
     with _connect() as conn:
         row = conn.execute(
-            "SELECT * FROM scheduled_expenses WHERE id = ?", (scheduled_id,)
+            "SELECT * FROM scheduled_expenses WHERE id = ? AND created_by = ?",
+            (scheduled_id, user_id),
         ).fetchone()
         if row is None:
             return None

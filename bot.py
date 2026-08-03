@@ -670,13 +670,20 @@ async def on_remove_action(query: CallbackQuery):
     await query.answer()
 
 
+# Past this many cents a float cannot hold the amount exactly, and the value is
+# heading for an overflow on the way into SQLite's integer column.
+MAX_CENTS = 2**53
+
+
 def parse_amount(text):
     # A decimal amount typed by the user, stored as an integer number of cents.
-    # Zero, negative and non-finite amounts are malformed input.
-    value = float(text)
-    if not math.isfinite(value) or value <= 0:
+    # Zero, negative, non-finite and absurd amounts are malformed input. The check
+    # is on the cents rather than the amount because the multiplication is what
+    # overflows: 1e308 is a finite amount and an infinite number of cents.
+    cents = float(text) * 100
+    if not math.isfinite(cents) or not 0 < cents <= MAX_CENTS:
         raise ValueError(f"bad amount: {text}")
-    return round(value * 100)
+    return round(cents)
 
 
 def format_price(cents):
@@ -685,10 +692,16 @@ def format_price(cents):
 
 DEFAULT_TABLE_WIDTH = 30  # used until a user picks their own with /tablewidth
 MIN_TABLE_WIDTH = 20  # below this the Product column can't hold its header
+# Above this a table only wraps on a phone, and every row costs its width in
+# characters against Telegram's 4096-character message limit.
+MAX_TABLE_WIDTH = 60
 
 
 def table_width(user_id):
-    return int(db.get_pref(user_id, "table_width", DEFAULT_TABLE_WIDTH))
+    # Clamped on the way out too, so a width stored before these bounds existed
+    # cannot blow up a message.
+    stored = int(db.get_pref(user_id, "table_width", DEFAULT_TABLE_WIDTH))
+    return max(MIN_TABLE_WIDTH, min(stored, MAX_TABLE_WIDTH))
 
 
 def truncate(text, width):
@@ -1202,6 +1215,9 @@ async def tablewidth(message: Message, command: CommandObject):
     if width < MIN_TABLE_WIDTH:
         await reply(message, f"Width must be at least {MIN_TABLE_WIDTH}")
         return
+    if width > MAX_TABLE_WIDTH:
+        await reply(message, f"Width must be at most {MAX_TABLE_WIDTH}")
+        return
     db.set_pref(message.from_user.id, "table_width", width)
     await reply(message, f"Table width set to {width}")
 
@@ -1242,7 +1258,7 @@ async def on_scheduled_action(query: CallbackQuery):
     # only to the creator, so this only fires for them. Popping the row first
     # keeps a double tap from recording it twice.
     _, action, scheduled_id = query.data.split(":", 2)
-    item = db.pop_scheduled(scheduled_id)
+    item = db.pop_scheduled(scheduled_id, query.from_user.id)
     if item is None:
         await query.answer("Already handled.")
         return
@@ -1311,9 +1327,17 @@ async def dispatch_due_scheduled(bot):
     max_due = now.date() if now.hour >= 9 else now.date() - timedelta(days=1)
     for item in db.unnotified_scheduled(max_due.isoformat()):
         text, markup = scheduled_prompt(item)
-        await bot.send_message(
-            item["created_by"], text, parse_mode="HTML", reply_markup=markup
-        )
+        # One undeliverable prompt (a creator who blocked the bot) must not hold
+        # up the items behind it. It stays unnotified so a passing failure is
+        # retried; a permanent one keeps complaining in the log until the expense
+        # is removed, which beats dropping it silently.
+        try:
+            await bot.send_message(
+                item["created_by"], text, parse_mode="HTML", reply_markup=markup
+            )
+        except Exception:
+            logging.exception("could not prompt for scheduled %s", item["id"])
+            continue
         db.mark_scheduled_notified(item["seq"])
 
 
