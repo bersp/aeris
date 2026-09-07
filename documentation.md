@@ -54,6 +54,8 @@ Every upcoming expense, one-off deferrals and installments alike, each flagged a
 
 Delete something logged by mistake, also `/rm`. Works on expenses, incomes, payments and scheduled expenses alike. Pass the last few characters of its id, shown in replies and the detailed lists: `/rm fk`.
 
+It only reaches what you logged yourself. An expense someone else recorded is theirs to remove, even when you paid for it or shared it, so `/rm` on one of those answers that there is nothing to remove.
+
 Nothing is deleted right away: the bot shows the operation it matched and waits for you to confirm. A short suffix can match several entries, in which case it offers the most recent one, so check the reply before confirming and pass more characters to reach an older one.
 
 ```
@@ -64,7 +66,7 @@ Rewrite an entry, also `/mod`. After the id, type it the way you would type a ne
 
 Everything you leave out keeps the value it has, so that example touches only the note. Since the price comes after the product, changing it means restating the product too: `/mod fk super 7500`. An empty `()` deletes a note. Dating an entry into the future turns it into a scheduled expense, and dating one back records it now.
 
-It shows you the entry before and after and waits for you to confirm, like `/remove`. The id keeps its last two letters, so the suffix you type still works afterwards.
+It shows you the entry before and after and waits for you to confirm, like `/remove`, and like `/remove` it only reaches entries you logged yourself. The id keeps its last two letters, so the suffix you type still works afterwards.
 
 ## Reviewing your spending
 
@@ -138,7 +140,7 @@ Removes an alias.
 /products
 ```
 
-Every product you bought, how often, and its aliases.
+Your catalog: every product name Aeris knows, how many expenses use it, and its aliases. This is what a typo is matched against, so a name drops off the list once nothing uses it any more.
 
 ## Groups
 
@@ -159,6 +161,20 @@ Undo a group.
 ```
 
 Your groups and their products.
+
+## Renaming
+
+```
+/rename [product|income|group] <old> <new>
+```
+
+Change a name everywhere it is used. Without a kind it renames a product, so `/rename Transporte Combustible` relabels every expense that says Transporte, scheduled ones included. `/rename income Sueldo Salario` does the same for an income source, `/rename group Servicios Casa` for a group. Case is part of a name, so `/rename taxi Taxi` is how you standardize a spelling.
+
+A name that is a product is always renameable, even if an alias points somewhere else: this is the one command that means the name itself. Anything else goes through the aliases and typo fixing an expense would, so `/rename Delivry Pedidos` still finds Delivery. Aliases pointing at the product keep working afterwards. The new name is taken literally.
+
+Nothing changes until you confirm. The reply says how many entries are about to be renamed and, when the new name is already in use, how many entries it has, since the two become one name from then on. Merging a product moves its expenses, its pending installments and its aliases onto the one that stays, and it keeps the group it is already in.
+
+Your own name is changed with `/register`, and an alias is re-pointed by running `/alias` again.
 
 ## Display
 

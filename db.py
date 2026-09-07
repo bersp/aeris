@@ -149,6 +149,10 @@ def init_db():
             )
             """
         )
+        # Who typed the command that recorded the payment (may differ from the
+        # payer, since /pay names both sides). Added later and left nullable, so
+        # rows from before it fall back to the payer, exactly as expenses do.
+        _add_column(conn, "payments", "created_by", "INTEGER")
         # A generic per-user key-value store for settings (e.g. table_width).
         conn.execute(
             """
@@ -277,6 +281,18 @@ def get_or_create_product(user_id, name):
         return cursor.lastrowid
 
 
+# A product row outlives what put it there: removing its last expense, rejecting a
+# scheduled one or rewriting an entry all leave the name behind. A leftover name
+# must not go on collapsing typos onto itself nor keep the next expense that uses
+# it from being flagged as new, so the catalog is everything still pointed at.
+LIVE_PRODUCT = """
+       id IN (SELECT product_id FROM expenses)
+    OR id IN (SELECT product_id FROM scheduled_expenses)
+    OR id IN (SELECT product_id FROM aliases)
+    OR id IN (SELECT product_id FROM product_groups)
+"""
+
+
 def user_products(user_id):
     # The user's product names (their catalog), in creation order. Used to resolve
     # a typed product to an existing one.
@@ -284,9 +300,63 @@ def user_products(user_id):
         return [
             row["name"]
             for row in conn.execute(
-                "SELECT name FROM products WHERE user_id = ? ORDER BY id", (user_id,)
+                f"SELECT name FROM products WHERE user_id = ? AND ({LIVE_PRODUCT}) "
+                "ORDER BY id",
+                (user_id,),
             )
         ]
+
+
+def find_product(user_id, name):
+    # The user's product with this name ignoring case, as a row with its id and
+    # stored spelling, or None. /rename works on the row rather than the name,
+    # since a merge has to move the things pointing at it.
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT id, name FROM products "
+            f"WHERE user_id = ? AND name = ? COLLATE NOCASE AND ({LIVE_PRODUCT})",
+            (user_id, name),
+        ).fetchone()
+
+
+def product_usage(product_id):
+    # How many expenses and pending scheduled expenses a product is used by.
+    with _connect() as conn:
+        expenses = conn.execute(
+            "SELECT COUNT(*) AS n FROM expenses WHERE product_id = ?", (product_id,)
+        ).fetchone()["n"]
+        scheduled = conn.execute(
+            "SELECT COUNT(*) AS n FROM scheduled_expenses WHERE product_id = ?",
+            (product_id,),
+        ).fetchone()["n"]
+        return expenses, scheduled
+
+
+def rename_product(user_id, product_id, new_name, target_id=None):
+    # Rename one of the user's products. `target_id` is the product that already
+    # carries the new name: everything pointing at the renamed one is repointed at
+    # it and the old row goes away, so the two become a single product. A product
+    # belongs to at most one group, so a merged one keeps the group the target is
+    # already in and inherits the old one's only when it has none.
+    with _connect() as conn:
+        if target_id is None:
+            conn.execute(
+                "UPDATE products SET name = ? WHERE id = ? AND user_id = ?",
+                (new_name, product_id, user_id),
+            )
+            return
+        for table in ("expenses", "scheduled_expenses", "aliases"):
+            conn.execute(
+                f"UPDATE {table} SET product_id = ? WHERE product_id = ?",
+                (target_id, product_id),
+            )
+        conn.execute(
+            "UPDATE product_groups SET product_id = ? WHERE product_id = ? AND NOT EXISTS "
+            "(SELECT 1 FROM product_groups WHERE user_id = ? AND product_id = ?)",
+            (target_id, product_id, user_id, target_id),
+        )
+        conn.execute("DELETE FROM product_groups WHERE product_id = ?", (product_id,))
+        conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
 
 
 def set_alias(user_id, alias, product_id):
@@ -324,22 +394,22 @@ def alias_product(user_id, alias):
 
 
 def product_counts(user_id):
-    # Each product the user paid for or consumed, with how many expenses used it
-    # and the user's aliases for it, most-bought first.
+    # The user's catalog: every product name they can type, how many expenses use
+    # it and their aliases for it, most-bought first. This is the same set
+    # user_products resolves against, so what the list shows is what a typo
+    # collapses onto; a product held only by an alias or a group counts zero.
     with _connect() as conn:
         return conn.execute(
-            """
-            SELECT p.name AS product, COUNT(*) AS n,
+            f"""
+            SELECT name AS product,
+                   (SELECT COUNT(*) FROM expenses e WHERE e.product_id = products.id) AS n,
                    (SELECT GROUP_CONCAT(a.alias, ', ') FROM aliases a
-                    WHERE a.product_id = e.product_id AND a.user_id = ?) AS aliases
-            FROM expenses e
-            JOIN products p ON p.id = e.product_id
-            WHERE e.payer_id = ?
-               OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
-            GROUP BY e.product_id
-            ORDER BY n DESC, p.name COLLATE NOCASE
+                    WHERE a.product_id = products.id) AS aliases
+            FROM products
+            WHERE user_id = ? AND ({LIVE_PRODUCT})
+            ORDER BY n DESC, name COLLATE NOCASE
             """,
-            (user_id, user_id, user_id),
+            (user_id,),
         ).fetchall()
 
 
@@ -368,6 +438,28 @@ def remove_group(user_id, name):
             "DELETE FROM product_groups WHERE user_id = ? AND name = ?", (user_id, name)
         )
         return cursor.rowcount > 0
+
+
+def group_usage(user_id, name):
+    # How many products are in the user's group and the spelling it is stored
+    # under, ignoring case; a count of zero means there is no such group.
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n, MAX(name) AS name FROM product_groups "
+            "WHERE user_id = ? AND name = ? COLLATE NOCASE",
+            (user_id, name),
+        ).fetchone()
+
+
+def rename_group(user_id, old_name, new_name):
+    # Rename one of the user's groups. A group is the set of rows sharing a name,
+    # so renaming onto one that exists merges their products into a single group.
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE product_groups SET name = ? "
+            "WHERE user_id = ? AND name = ? COLLATE NOCASE",
+            (new_name, user_id, old_name),
+        )
 
 
 def list_groups(user_id):
@@ -447,14 +539,19 @@ def add_income(user_id, amount, description, when=None, income_id=None, note=Non
     return income_id
 
 
-def add_payment(payer_id, payee_id, amount):
+def add_payment(payer_id, payee_id, amount, created_by=None):
     when = datetime.now()
     payment_id = new_id(when)
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO payments (id, payer_id, payee_id, amount, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (payment_id, payer_id, payee_id, amount, when.isoformat(timespec="microseconds")),
+            "INSERT INTO payments "
+            "(id, payer_id, payee_id, amount, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                payment_id, payer_id, payee_id, amount,
+                when.isoformat(timespec="microseconds"),
+                created_by if created_by is not None else payer_id,
+            ),
         )
     return payment_id
 
@@ -579,17 +676,21 @@ def list_scheduled(user_id):
         return [_scheduled_dict(conn, row) for row in rows]
 
 
-# The kinds of operation /rm acts on. Each entry is the query scoping rows to the
-# ones a user takes part in, how many times their id fills into it, and the prefix
+# The kinds of operation /rm and /mod act on. Each entry is the query scoping rows
+# to the ones a user wrote, how many times their id fills into it, and the prefix
 # its columns need (only the expense query joins another table with an `id`).
+#
+# Scoped by authorship, not participation: an entry is changed by whoever logged
+# it, so sharing an expense or being paid does not hand over the right to rewrite
+# or delete it. `created_by` came after the rows that have none, which fall back to
+# the payer the same way they do everywhere they are displayed.
 _OPERATION_SCOPES = {
     "expense": (
         "SELECT e.seq, e.id, e.created_at, e.price, e.description, e.created_by, "
         "p.name AS product, e.payer_id "
         "FROM expenses e JOIN products p ON p.id = e.product_id "
-        "WHERE (e.payer_id = ? OR e.seq IN "
-        "(SELECT expense_seq FROM consumers WHERE user_id = ?))",
-        2,
+        "WHERE COALESCE(e.created_by, e.payer_id) = ?",
+        1,
         "e.",
     ),
     "income": (
@@ -599,14 +700,13 @@ _OPERATION_SCOPES = {
     ),
     "payment": (
         "SELECT seq, id, created_at, amount, payer_id, payee_id "
-        "FROM payments WHERE (payer_id = ? OR payee_id = ?)",
-        2,
+        "FROM payments WHERE COALESCE(created_by, payer_id) = ?",
+        1,
         "",
     ),
     "scheduled": (
-        "SELECT * FROM scheduled_expenses WHERE (created_by = ? OR payer_id = ? "
-        "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?))",
-        3,
+        "SELECT * FROM scheduled_expenses WHERE created_by = ?",
+        1,
         "",
     ),
 }
@@ -930,6 +1030,29 @@ def income_summary(user_id, since=None, until=None):
     query += " GROUP BY description ORDER BY total DESC"
     with _connect() as conn:
         return conn.execute(query, params).fetchall()
+
+
+def income_usage(user_id, name):
+    # How many of the user's incomes carry this name and the spelling they are
+    # stored under, ignoring case; a count of zero means no income has it.
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n, MAX(description) AS name FROM incomes "
+            "WHERE user_id = ? AND description = ? COLLATE NOCASE",
+            (user_id, name),
+        ).fetchone()
+
+
+def rename_income(user_id, old_name, new_name):
+    # Give every income of the user's named `old_name` the new name, ignoring
+    # case. Incomes are grouped by name, so renaming onto one that already exists
+    # folds the two sources into one.
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE incomes SET description = ? "
+            "WHERE user_id = ? AND description = ? COLLATE NOCASE",
+            (new_name, user_id, old_name),
+        )
 
 
 def cash_balance(user_id):

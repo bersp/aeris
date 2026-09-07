@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import secrets
 from datetime import datetime, timedelta
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
@@ -486,12 +487,16 @@ def removal_recipients(item, remover_id):
 @dp.message(Command("remove", "rm"))
 @usage("/rm <id suffix>")
 async def remove(message: Message, command: CommandObject):
-    # An id suffix can match several operations, and only the most recent one is
-    # picked, so nothing is deleted until the user has seen exactly which.
+    # Only what the sender logged is reachable, so an entry someone else recorded
+    # is theirs to remove. An id suffix can match several of their operations, and
+    # only the most recent is picked, so nothing is deleted until they have seen
+    # exactly which.
     suffix = command.args.strip()
     item = db.find_operation(message.from_user.id, suffix)
     if item is None:
-        await reply(message, "Nothing to remove.")
+        await reply(
+            message, f"Nothing to remove: no entry you logged ends with {suffix}."
+        )
         return
     target = f"{item['kind']}:{item['seq']}"
     buttons = [
@@ -560,7 +565,9 @@ async def modify(message: Message, command: CommandObject):
     sender_id = message.from_user.id
     item = db.find_operation(sender_id, suffix)
     if item is None:
-        await reply(message, "Nothing to modify.")
+        await reply(
+            message, f"Nothing to modify: no entry you logged ends with {suffix}."
+        )
         return
     if item["kind"] == "payment":
         await reply(message, "Payments cannot be modified. Remove it with /rm and pay again.")
@@ -708,6 +715,10 @@ def truncate(text, width):
     if len(text) <= width:
         return text
     return text[: width - 3] + "..."
+
+
+def plural(count, noun):
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 def pretty_product(name):
@@ -1157,6 +1168,156 @@ async def rmalias(message: Message, command: CommandObject):
         await reply(message, f"No alias {alias_name.lower()}")
 
 
+# The three things a name can belong to. Users rename themselves with /register
+# and an alias is re-pointed with /alias, so neither needs a kind here.
+RENAME_KINDS = ("product", "income", "group")
+
+# Renames waiting on their confirmation button, keyed by who asked and a token
+# short enough to travel in the button. In memory for the same reason
+# PENDING_MODIFICATIONS is.
+PENDING_RENAMES = {}
+
+
+def rename_plan(user_id, kind, old, new):
+    # What a rename is about to do, or None when nothing carries the old name.
+    # "moved" counts the entries taking the new name and "merged" the ones already
+    # under it, since renaming onto a name in use folds the two together. Nothing
+    # merges with itself: changing only how a name is written leaves one name.
+    restyle = old.lower() == new.lower()
+    if kind == "income":
+        usage = db.income_usage(user_id, old)
+        if not usage["n"]:
+            return None
+        merged = 0 if restyle else db.income_usage(user_id, new)["n"]
+        plan = {"old": usage["name"], "moved": usage["n"], "merged": merged}
+    elif kind == "group":
+        usage = db.group_usage(user_id, old)
+        if not usage["n"]:
+            return None
+        merged = 0 if restyle else db.group_usage(user_id, new)["n"]
+        plan = {"old": usage["name"], "moved": usage["n"], "merged": merged}
+    else:
+        # A product that is spelled out wins over the aliases and typo collapsing
+        # an /expense would apply, so a name that exists can always be renamed:
+        # an alias is free to point somewhere else, and this is the one command
+        # that means the name itself rather than what it usually stands for.
+        # The new name is taken literally either way: it only meets an existing
+        # product when it is spelled like one, which is when the two have to merge.
+        product = db.find_product(user_id, old)
+        if product is None:
+            existing = resolve_product(user_id, old)
+            product = db.find_product(user_id, existing) if existing else None
+        if product is None:
+            return None
+        # Both spellings can land on the same row (a restyle, or an old name that
+        # only reached it through a typo), and a product cannot be merged into
+        # itself: that would move its expenses onto itself and then delete it.
+        target = db.find_product(user_id, new)
+        if target is not None and target["id"] == product["id"]:
+            target = None
+        expenses, scheduled = db.product_usage(product["id"])
+        plan = {
+            "old": product["name"],
+            "moved": expenses,
+            "scheduled": scheduled,
+            "merged": db.product_usage(target["id"])[0] if target else 0,
+            "product_id": product["id"],
+            "target_id": target["id"] if target else None,
+        }
+    return dict(plan, kind=kind, new=new)
+
+
+RENAME_NOUNS = {"product": "expense", "income": "income", "group": "product"}
+
+
+def rename_detail(plan):
+    # A rename spelled out: what becomes what, how much it touches, and what it
+    # is about to be merged with when the new name is already in use.
+    noun = RENAME_NOUNS[plan["kind"]]
+    new = pretty_product(plan["new"])
+    lines = [f"- {pretty_product(plan['old'])} -> {new}"]
+    counted = f"- {plural(plan['moved'], noun)}"
+    if plan.get("scheduled"):
+        counted += f" and {plural(plan['scheduled'], 'scheduled expense')}"
+    lines.append(counted)
+    if plan["merged"]:
+        lines.append(f"- {new} already has {plural(plan['merged'], noun)}: merging")
+    return "\n".join(lines)
+
+
+@dp.message(Command("rename"))
+@usage("/rename [product|income|group] <old> <new>")
+async def rename(message: Message, command: CommandObject):
+    # Rewrite a name wherever it is used: a product on every expense that carries
+    # it, an income source, or a group. Renaming onto a name already in use merges
+    # the two, so nothing is written until the counts have been confirmed.
+    parts = command.args.split()
+    if len(parts) == 3:
+        kind, old, new = parts
+        if kind not in RENAME_KINDS:
+            raise ValueError
+    else:
+        kind = "product"
+        old, new = parts  # anything but a pair is a usage error
+
+    # The new name is typed back as a single token in later commands, where
+    # parentheses open a note and a number reads as an amount.
+    if is_number(new) or "(" in new or ")" in new:
+        await reply(message, "New name cannot be a number or contain parentheses.")
+        return
+
+    user_id = message.from_user.id
+    plan = rename_plan(user_id, kind, old, new)
+    if plan is None:
+        await reply(message, f"No {kind} named {pretty_product(old)}.")
+        return
+    if plan["old"] == new:
+        await reply(message, f"{pretty_product(new)} is already its name.")
+        return
+
+    token = secrets.token_hex(3)
+    PENDING_RENAMES[(user_id, token)] = plan
+    text = f"Rename this {kind}?\n{rename_detail(plan)}"
+    buttons = [
+        InlineKeyboardButton(text="Rename", callback_data=f"ren:yes:{token}"),
+        InlineKeyboardButton(text="Keep", callback_data=f"ren:no:{token}"),
+    ]
+    await message.answer(
+        f"<code>{html.escape(text)}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+    )
+
+
+@dp.callback_query(F.data.startswith("ren:"))
+async def on_rename_action(query: CallbackQuery):
+    # Apply a confirmed rename. The pending plan is keyed by who asked, so the
+    # token in the button only resolves one for them.
+    _, action, token = query.data.split(":", 2)
+    user_id = query.from_user.id
+    plan = PENDING_RENAMES.pop((user_id, token), None)
+    if plan is None:
+        await query.answer("Expired. Run /rename again.")
+        return
+
+    if action == "no":
+        text = f"Kept {pretty_product(plan['old'])}"
+    else:
+        if plan["kind"] == "income":
+            db.rename_income(user_id, plan["old"], plan["new"])
+        elif plan["kind"] == "group":
+            db.rename_group(user_id, plan["old"], plan["new"])
+        else:
+            db.rename_product(
+                user_id, plan["product_id"], plan["new"], plan["target_id"]
+            )
+        text = f"Renamed {plan['kind']}\n{rename_detail(plan)}"
+    await query.message.edit_text(
+        f"<code>{html.escape(text)}</code>", parse_mode="HTML"
+    )
+    await query.answer()
+
+
 @dp.message(Command("group"))
 @usage("/group <name> <product,product,...>")
 async def group(message: Message, command: CommandObject):
@@ -1177,7 +1338,7 @@ async def group(message: Message, command: CommandObject):
         member_names.append(product)
     db.set_group(user_id, name, product_ids)
     members = ", ".join(pretty_product(n) for n in member_names)
-    await reply(message, f"Group {name} -> {members}")
+    await reply(message, f"Group {pretty_product(name)} -> {members}")
 
 
 @dp.message(Command("ungroup"))
@@ -1185,9 +1346,9 @@ async def group(message: Message, command: CommandObject):
 async def ungroup(message: Message, command: CommandObject):
     name = command.args.strip()
     if db.remove_group(message.from_user.id, name):
-        await reply(message, f"Removed group {name}")
+        await reply(message, f"Removed group {pretty_product(name)}")
     else:
-        await reply(message, f"No group {name}")
+        await reply(message, f"No group {pretty_product(name)}")
 
 
 @dp.message(Command("groups"))
@@ -1196,7 +1357,9 @@ async def groups(message: Message, command: CommandObject):
     if not rows:
         await reply(message, "No groups.")
         return
-    table_rows = [(r["name"], r["products"]) for r in rows]
+    # Both columns are product-style names, so their underscores read as spaces
+    # here exactly as they do in every table.
+    table_rows = [(pretty_product(r["name"]), pretty_product(r["products"])) for r in rows]
     block = table_block("👥", "Groups", ("Group", "Products"), table_rows)
     await reply(message, block)
 
@@ -1245,7 +1408,9 @@ async def pay(message: Message, command: CommandObject):
 
     payer_id = db.get_user_id(payer_name) if len(parts) == 3 else message.from_user.id
     payee_id = db.get_user_id(payee_name)
-    payment_id = db.add_payment(payer_id, payee_id, amount)
+    payment_id = db.add_payment(
+        payer_id, payee_id, amount, created_by=message.from_user.id
+    )
 
     detail = payment_detail(day_str(), payment_id, payer_name, payee_name, amount)
     text = f"Added Payment\n{detail}"
@@ -1299,6 +1464,7 @@ _COMMAND_GROUPS = (
     (group, ("group",)),
     (ungroup, ("ungroup",)),
     (groups, ("groups",)),
+    (rename, ("rename",)),
     (tablewidth, ("tablewidth",)),
 )
 TEXT_COMMANDS = {word: handler for handler, words in _COMMAND_GROUPS for word in words}
