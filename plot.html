@@ -55,16 +55,18 @@
         if (tg.setBackgroundColor) tg.setBackgroundColor("bg_color");
       }
 
-      // Telegram appends its own params to the fragment, so read our named one
-      // (m=...) instead of the whole hash. Only the month count travels in the
-      // URL; the figures come from the API, authenticated with the signed
-      // session Telegram hands the page.
+      // Telegram appends its own params to the fragment, so read our named ones
+      // (m=..., w=...) instead of the whole hash. Only the month count and the
+      // wallet travel in the URL; the figures come from the API, authenticated
+      // with the signed session Telegram hands the page.
       const params = new URLSearchParams(location.hash.slice(1));
       const initData = (tg && tg.initData) || params.get("tgWebAppData") || "";
       const months = params.get("m") || "2";
+      const wallet = params.get("w");
 
       log("Loading...");
-      const res = await fetch(`${location.origin}/api/chart?months=${months}`,
+      const query = `months=${months}` + (wallet ? `&wallet=${wallet}` : "");
+      const res = await fetch(`${location.origin}/api/chart?${query}`,
                               { headers: { "X-Telegram-Init-Data": initData } });
       if (res.status === 401)
         throw new Error("Not authorised. Open this page from the bot.");
@@ -166,7 +168,8 @@
               filter: (item) => !item.dataset.isIncome,
               callbacks: {
                 title: (items) => (items.length ? "Day " + items[0].parsed.x : ""),
-                label: (item) => item.dataset.label + ": $" + item.parsed.y.toLocaleString(),
+                label: (item) =>
+                  item.dataset.label + ": " + data.symbol + item.parsed.y.toLocaleString(),
               },
             },
           },

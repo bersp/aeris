@@ -5,6 +5,9 @@ from datetime import datetime
 
 DB_PATH = "bills.db"
 
+# The wallet entries go to when nobody has picked another (see init_db).
+DEFAULT_WALLET = 1
+
 # All money is stored as an integer number of cents to avoid floating-point
 # rounding errors; the bot layer converts to and from a decimal amount.
 
@@ -38,6 +41,25 @@ def _add_column(conn, table, column, decl):
 
 def init_db():
     with _connect() as conn:
+        # A wallet is a separate set of books: its own expenses, incomes, payments,
+        # debts and cash, never added to another's. Wallets are shared by every
+        # user, the way debts are. Wallet 1 is the default, and everything logged
+        # before wallets existed lands in it. AUTOINCREMENT keeps a removed
+        # wallet's id from being handed out again, so a button or chart link left
+        # over from it can never open a different wallet.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wallets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                symbol TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO wallets (id, name, symbol) VALUES (?, 'ars', '$')",
+            (DEFAULT_WALLET,),
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -195,6 +217,8 @@ def init_db():
             )
             """
         )
+        for table in ("expenses", "scheduled_expenses", "incomes", "payments"):
+            _add_column(conn, table, "wallet_id", f"INTEGER NOT NULL DEFAULT {DEFAULT_WALLET}")
 
 
 # --- users ---
@@ -261,6 +285,95 @@ def set_pref(user_id, key, value):
             "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
             (user_id, key, str(value)),
         )
+
+
+# --- wallets ---
+
+
+def add_wallet(name, symbol):
+    with _connect() as conn:
+        conn.execute("INSERT INTO wallets (name, symbol) VALUES (?, ?)", (name, symbol))
+
+
+def get_wallet(wallet_id):
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT id, name, symbol FROM wallets WHERE id = ?", (wallet_id,)
+        ).fetchone()
+
+
+def find_wallet(name):
+    # The wallet with this name ignoring case, or None.
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT id, name, symbol FROM wallets WHERE name = ? COLLATE NOCASE", (name,)
+        ).fetchone()
+
+
+def all_wallets():
+    with _connect() as conn:
+        return conn.execute("SELECT id, name, symbol FROM wallets ORDER BY id").fetchall()
+
+
+def active_wallet(user_id):
+    # The wallet the user's entries go to when they name none: the one they last
+    # switched to with /wallet, or the default.
+    return get_wallet(int(get_pref(user_id, "wallet", DEFAULT_WALLET)))
+
+
+# Each kind of entry a wallet holds, and the table it lives in.
+_WALLET_TABLES = {
+    "expense": "expenses",
+    "income": "incomes",
+    "payment": "payments",
+    "scheduled": "scheduled_expenses",
+}
+
+
+def _wallet_usage(conn, wallet_id):
+    return {
+        kind: conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE wallet_id = ?", (wallet_id,)
+        ).fetchone()["n"]
+        for kind, table in _WALLET_TABLES.items()
+    }
+
+
+def wallet_usage(wallet_id):
+    # How many entries of each kind a wallet holds, counting every user's.
+    with _connect() as conn:
+        return _wallet_usage(conn, wallet_id)
+
+
+def delete_wallet(wallet_id):
+    # Delete a wallet with everything in it, for every user, and send whoever had
+    # it active back to the default. Returns how many entries of each kind went
+    # with it, counted inside the same transaction so the figure is exact.
+    with _connect() as conn:
+        usage = _wallet_usage(conn, wallet_id)
+        conn.execute(
+            "DELETE FROM consumers WHERE expense_seq IN "
+            "(SELECT seq FROM expenses WHERE wallet_id = ?)",
+            (wallet_id,),
+        )
+        conn.execute(
+            "DELETE FROM scheduled_consumers WHERE scheduled_seq IN "
+            "(SELECT seq FROM scheduled_expenses WHERE wallet_id = ?)",
+            (wallet_id,),
+        )
+        for table in _WALLET_TABLES.values():
+            conn.execute(f"DELETE FROM {table} WHERE wallet_id = ?", (wallet_id,))
+        conn.execute(
+            "DELETE FROM preferences WHERE key = 'wallet' AND value = ?", (str(wallet_id),)
+        )
+        conn.execute("DELETE FROM wallets WHERE id = ?", (wallet_id,))
+        return usage
+
+
+def _wallet_symbol(conn, wallet_id):
+    return conn.execute(
+        "SELECT symbol FROM wallets WHERE id = ?", (wallet_id,)
+    ).fetchone()["symbol"]
 
 
 # --- products ---
@@ -495,7 +608,7 @@ def reid(operation_id, when):
 
 
 def add_expense(
-    payer_id, price, product_id, consumer_ids, when=None, description=None,
+    payer_id, price, product_id, consumer_ids, wallet_id, when=None, description=None,
     created_by=None, expense_id=None,
 ):
     # `expense_id` lets a rewritten expense keep the id people already know; left
@@ -505,8 +618,9 @@ def add_expense(
     with _connect() as conn:
         cursor = conn.execute(
             "INSERT INTO expenses "
-            "(id, payer_id, price, product_id, description, created_at, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(id, payer_id, price, product_id, description, created_at, created_by, "
+            " wallet_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 expense_id,
                 payer_id,
@@ -515,6 +629,7 @@ def add_expense(
                 description,
                 when.isoformat(timespec="microseconds"),
                 created_by if created_by is not None else payer_id,
+                wallet_id,
             ),
         )
         conn.executemany(
@@ -524,33 +639,37 @@ def add_expense(
     return expense_id
 
 
-def add_income(user_id, amount, description, when=None, income_id=None, note=None):
+def add_income(
+    user_id, amount, description, wallet_id, when=None, income_id=None, note=None
+):
     when = when or datetime.now()
     income_id = income_id or new_id(when)
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO incomes (id, user_id, amount, description, note, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO incomes "
+            "(id, user_id, amount, description, note, created_at, wallet_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 income_id, user_id, amount, description, note,
-                when.isoformat(timespec="microseconds"),
+                when.isoformat(timespec="microseconds"), wallet_id,
             ),
         )
     return income_id
 
 
-def add_payment(payer_id, payee_id, amount, created_by=None):
+def add_payment(payer_id, payee_id, amount, wallet_id, created_by=None):
     when = datetime.now()
     payment_id = new_id(when)
     with _connect() as conn:
         conn.execute(
             "INSERT INTO payments "
-            "(id, payer_id, payee_id, amount, created_at, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(id, payer_id, payee_id, amount, created_at, created_by, wallet_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 payment_id, payer_id, payee_id, amount,
                 when.isoformat(timespec="microseconds"),
                 created_by if created_by is not None else payer_id,
+                wallet_id,
             ),
         )
     return payment_id
@@ -560,7 +679,7 @@ def add_payment(payer_id, payee_id, amount, created_by=None):
 
 
 def add_scheduled_expense(
-    created_by, payer_id, price, product_id, consumer_ids, due_date,
+    created_by, payer_id, price, product_id, consumer_ids, due_date, wallet_id,
     description=None, plan_id=None, plan_index=None, plan_total=None,
     scheduled_id=None,
 ):
@@ -571,12 +690,12 @@ def add_scheduled_expense(
         cursor = conn.execute(
             "INSERT INTO scheduled_expenses "
             "(id, created_by, payer_id, price, product_id, description, due_date, "
-            " plan_id, plan_index, plan_total, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " plan_id, plan_index, plan_total, created_at, wallet_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 scheduled_id, created_by, payer_id, price, product_id, description,
                 due_date, plan_id, plan_index, plan_total,
-                datetime.now().isoformat(timespec="microseconds"),
+                datetime.now().isoformat(timespec="microseconds"), wallet_id,
             ),
         )
         conn.executemany(
@@ -616,6 +735,8 @@ def _scheduled_dict(conn, row):
         "plan_id": row["plan_id"],
         "plan_index": row["plan_index"],
         "plan_total": row["plan_total"],
+        "wallet_id": row["wallet_id"],
+        "symbol": _wallet_symbol(conn, row["wallet_id"]),
         "payer": payer,
         "added_by": creator["name"] if creator else payer,
         "consumer_ids": [c["user_id"] for c in consumers],
@@ -663,15 +784,15 @@ def pop_scheduled(scheduled_id, user_id):
         return item
 
 
-def list_scheduled(user_id):
-    # Pending scheduled expenses the user takes part in (as creator, payer or
-    # consumer), oldest due first.
+def list_scheduled(user_id, wallet_id):
+    # Pending scheduled expenses of a wallet the user takes part in (as creator,
+    # payer or consumer), oldest due first.
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM scheduled_expenses WHERE created_by = ? OR payer_id = ? "
-            "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?) "
-            "ORDER BY due_date, seq",
-            (user_id, user_id, user_id),
+            "SELECT * FROM scheduled_expenses WHERE (created_by = ? OR payer_id = ? "
+            "OR seq IN (SELECT scheduled_seq FROM scheduled_consumers WHERE user_id = ?)) "
+            "AND wallet_id = ? ORDER BY due_date, seq",
+            (user_id, user_id, user_id, wallet_id),
         ).fetchall()
         return [_scheduled_dict(conn, row) for row in rows]
 
@@ -687,19 +808,20 @@ def list_scheduled(user_id):
 _OPERATION_SCOPES = {
     "expense": (
         "SELECT e.seq, e.id, e.created_at, e.price, e.description, e.created_by, "
-        "p.name AS product, e.payer_id "
+        "p.name AS product, e.product_id, e.payer_id, e.wallet_id "
         "FROM expenses e JOIN products p ON p.id = e.product_id "
         "WHERE COALESCE(e.created_by, e.payer_id) = ?",
         1,
         "e.",
     ),
     "income": (
-        "SELECT seq, id, created_at, amount, description, note FROM incomes WHERE user_id = ?",
+        "SELECT seq, id, created_at, amount, description, note, wallet_id "
+        "FROM incomes WHERE user_id = ?",
         1,
         "",
     ),
     "payment": (
-        "SELECT seq, id, created_at, amount, payer_id, payee_id "
+        "SELECT seq, id, created_at, amount, payer_id, payee_id, wallet_id "
         "FROM payments WHERE COALESCE(created_by, payer_id) = ?",
         1,
         "",
@@ -740,6 +862,8 @@ def _operation_dict(conn, kind, row):
             "description": row["description"],
             "note": row["note"],
             "amount": row["amount"],
+            "wallet_id": row["wallet_id"],
+            "symbol": _wallet_symbol(conn, row["wallet_id"]),
         }
 
     def name_of(user):
@@ -757,6 +881,8 @@ def _operation_dict(conn, kind, row):
             "payee_id": row["payee_id"],
             "payer": name_of(row["payer_id"])["name"],
             "payee": name_of(row["payee_id"])["name"],
+            "wallet_id": row["wallet_id"],
+            "symbol": _wallet_symbol(conn, row["wallet_id"]),
         }
 
     payer = name_of(row["payer_id"])["name"]
@@ -772,10 +898,13 @@ def _operation_dict(conn, kind, row):
         "id": row["id"],
         "created_at": row["created_at"],
         "product": row["product"],
+        "product_id": row["product_id"],
         "price": row["price"],
         "description": row["description"],
         "payer_id": row["payer_id"],
         "created_by": row["created_by"],
+        "wallet_id": row["wallet_id"],
+        "symbol": _wallet_symbol(conn, row["wallet_id"]),
         "payer": payer,
         "added_by": creator["name"] if creator else payer,
         "consumer_ids": [c["user_id"] for c in consumers],
@@ -835,29 +964,32 @@ def delete_operation(user_id, kind, seq):
         return item
 
 
-def first_operation_date(user_id):
-    # The YYYY-MM-DD of the user's oldest operation of any kind, or None when they
-    # have none yet. Bounds how far back the web UI offers to look.
+def first_operation_date(user_id, wallet_id):
+    # The YYYY-MM-DD of the user's oldest operation of any kind in a wallet, or
+    # None when they have none yet. Bounds how far back the web UI offers to look.
     with _connect() as conn:
         row = conn.execute(
             """
             SELECT MIN(created_at) AS first FROM (
                 SELECT e.created_at FROM expenses e
-                WHERE e.payer_id = ?
-                   OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
+                WHERE (e.payer_id = :user
+                       OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = :user))
+                  AND e.wallet_id = :wallet
                 UNION ALL
-                SELECT created_at FROM incomes  WHERE user_id  = ?
+                SELECT created_at FROM incomes
+                WHERE user_id = :user AND wallet_id = :wallet
                 UNION ALL
-                SELECT created_at FROM payments WHERE payer_id = ? OR payee_id = ?
+                SELECT created_at FROM payments
+                WHERE (payer_id = :user OR payee_id = :user) AND wallet_id = :wallet
             )
             """,
-            (user_id, user_id, user_id, user_id, user_id),
+            {"user": user_id, "wallet": wallet_id},
         ).fetchone()
     return row["first"][:10] if row["first"] else None
 
 
-def recent_operations(user_id, limit=6, since=None, until=None):
-    # Operations the user takes part in (as payer/consumer of an expense, or as
+def recent_operations(user_id, wallet_id, limit=6, since=None, until=None):
+    # Operations of a wallet the user takes part in (as payer/consumer of an expense, or as
     # payer/payee of a payment), ordered oldest first. `since`/`until` bound the
     # window (since inclusive, until exclusive); with `limit` only the last that
     # many are kept. A payment is shown as a "pay" product whose single consumer
@@ -872,10 +1004,11 @@ def recent_operations(user_id, limit=6, since=None, until=None):
             JOIN users u ON u.user_id = e.payer_id
             LEFT JOIN users creator ON creator.user_id = e.created_by
             JOIN products p ON p.id = e.product_id
-            WHERE e.payer_id = ?
-               OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?)
+            WHERE (e.payer_id = ?
+                   OR e.seq IN (SELECT expense_seq FROM consumers WHERE user_id = ?))
+              AND e.wallet_id = ?
             """,
-            (user_id, user_id),
+            (user_id, user_id, wallet_id),
         ).fetchall()
         operations = []
         for expense in expenses:
@@ -906,9 +1039,9 @@ def recent_operations(user_id, limit=6, since=None, until=None):
             FROM payments p
             JOIN users payer ON payer.user_id = p.payer_id
             JOIN users payee ON payee.user_id = p.payee_id
-            WHERE p.payer_id = ? OR p.payee_id = ?
+            WHERE (p.payer_id = ? OR p.payee_id = ?) AND p.wallet_id = ?
             """,
-            (user_id, user_id),
+            (user_id, user_id, wallet_id),
         ).fetchall()
         for payment in payments:
             operations.append(
@@ -937,8 +1070,8 @@ def recent_operations(user_id, limit=6, since=None, until=None):
     return operations
 
 
-def expense_summary(user_id, since=None, until=None):
-    # The user's own share (each expense's price split among its consumers),
+def expense_summary(user_id, wallet_id, since=None, until=None):
+    # The user's own share in a wallet (each expense's price split among its consumers),
     # ordered largest first. `since`/`until` bound the window (since inclusive,
     # until exclusive). Payments are not expenses, so they are excluded. Products
     # the user has put in a group collapse into a single row labelled with the
@@ -954,9 +1087,9 @@ def expense_summary(user_id, since=None, until=None):
         JOIN (
             SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
         ) counts ON counts.expense_seq = e.seq
-        WHERE c.user_id = ?
+        WHERE c.user_id = ? AND e.wallet_id = ?
     """
-    params = [user_id, user_id]
+    params = [user_id, user_id, wallet_id]
     if since is not None:
         query += " AND e.created_at >= ?"
         params.append(since.isoformat())
@@ -968,8 +1101,8 @@ def expense_summary(user_id, since=None, until=None):
         return conn.execute(query, params).fetchall()
 
 
-def daily_expense_totals(user_id, since=None, until=None):
-    # The user's own share of expenses summed per calendar day, oldest first.
+def daily_expense_totals(user_id, wallet_id, since=None, until=None):
+    # The user's own share of a wallet's expenses summed per calendar day, oldest first.
     # `since`/`until` bound the window (since inclusive, until exclusive). Days
     # with no expense simply don't appear; the caller fills the gaps.
     query = """
@@ -980,9 +1113,9 @@ def daily_expense_totals(user_id, since=None, until=None):
         JOIN (
             SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
         ) counts ON counts.expense_seq = e.seq
-        WHERE c.user_id = ?
+        WHERE c.user_id = ? AND e.wallet_id = ?
     """
-    params = [user_id]
+    params = [user_id, wallet_id]
     if since is not None:
         query += " AND e.created_at >= ?"
         params.append(since.isoformat())
@@ -994,14 +1127,15 @@ def daily_expense_totals(user_id, since=None, until=None):
         return conn.execute(query, params).fetchall()
 
 
-def recent_incomes(user_id, limit=6, since=None, until=None):
-    # The user's individual incomes, ordered oldest first so the latest is printed
+def recent_incomes(user_id, wallet_id, limit=6, since=None, until=None):
+    # The user's individual incomes in a wallet, ordered oldest first so the latest is printed
     # last. `since`/`until` bound the window (since inclusive, until exclusive);
     # with `limit` only the last that many are kept.
     query = (
-        "SELECT id, created_at, description, note, amount FROM incomes WHERE user_id = ?"
+        "SELECT id, created_at, description, note, amount FROM incomes "
+        "WHERE user_id = ? AND wallet_id = ?"
     )
-    params = [user_id]
+    params = [user_id, wallet_id]
     if since is not None:
         query += " AND created_at >= ?"
         params.append(since.isoformat())
@@ -1016,11 +1150,14 @@ def recent_incomes(user_id, limit=6, since=None, until=None):
     return incomes
 
 
-def income_summary(user_id, since=None, until=None):
-    # The user's incomes grouped by description and ordered largest first.
+def income_summary(user_id, wallet_id, since=None, until=None):
+    # The user's incomes in a wallet grouped by description and ordered largest first.
     # `since`/`until` bound the window (since inclusive, until exclusive).
-    query = "SELECT description, SUM(amount) AS total FROM incomes WHERE user_id = ?"
-    params = [user_id]
+    query = (
+        "SELECT description, SUM(amount) AS total FROM incomes "
+        "WHERE user_id = ? AND wallet_id = ?"
+    )
+    params = [user_id, wallet_id]
     if since is not None:
         query += " AND created_at >= ?"
         params.append(since.isoformat())
@@ -1055,28 +1192,33 @@ def rename_income(user_id, old_name, new_name):
         )
 
 
-def cash_balance(user_id):
-    # Real money the user holds: incomes received, minus expenses they paid in
-    # full, plus payments received from others, minus payments made to others.
+def cash_balance(user_id, wallet_id):
+    # Real money the user holds in a wallet: incomes received, minus expenses they
+    # paid in full, plus payments received from others, minus payments made to
+    # others.
     with _connect() as conn:
         row = conn.execute(
             """
             SELECT
-              (SELECT COALESCE(SUM(amount), 0) FROM incomes  WHERE user_id  = ?)
-            - (SELECT COALESCE(SUM(price),  0) FROM expenses WHERE payer_id = ?)
-            + (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payee_id = ?)
-            - (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payer_id = ?)
+              (SELECT COALESCE(SUM(amount), 0) FROM incomes
+               WHERE user_id  = :user AND wallet_id = :wallet)
+            - (SELECT COALESCE(SUM(price),  0) FROM expenses
+               WHERE payer_id = :user AND wallet_id = :wallet)
+            + (SELECT COALESCE(SUM(amount), 0) FROM payments
+               WHERE payee_id = :user AND wallet_id = :wallet)
+            - (SELECT COALESCE(SUM(amount), 0) FROM payments
+               WHERE payer_id = :user AND wallet_id = :wallet)
             AS cash
             """,
-            (user_id, user_id, user_id, user_id),
+            {"user": user_id, "wallet": wallet_id},
         ).fetchone()
         return row["cash"]
 
 
-def balance(user_id):
-    # Net amount per other user: positive means they owe the user, negative means
-    # the user owes them. Each expense splits its price equally among consumers,
-    # and a payment reduces the debt in its own direction.
+def balance(user_id, wallet_id):
+    # Net amount per other user in a wallet: positive means they owe the user,
+    # negative means the user owes them. Each expense splits its price equally
+    # among consumers, and a payment reduces the debt in its own direction.
     with _connect() as conn:
         return conn.execute(
             """
@@ -1088,21 +1230,24 @@ def balance(user_id):
                 JOIN (
                     SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
                 ) counts ON counts.expense_seq = e.seq
-                WHERE c.user_id != e.payer_id
+                WHERE c.user_id != e.payer_id AND e.wallet_id = :wallet
+            ),
+            wallet_payments AS (
+                SELECT * FROM payments WHERE wallet_id = :wallet
             )
             SELECT u.name AS name, SUM(d.delta) AS net
             FROM (
-                SELECT consumer_id AS other_id,  share  AS delta FROM shares   WHERE payer_id    = ?
+                SELECT consumer_id AS other_id,  share  AS delta FROM shares          WHERE payer_id    = :user
                 UNION ALL
-                SELECT payer_id    AS other_id, -share  AS delta FROM shares   WHERE consumer_id = ?
+                SELECT payer_id    AS other_id, -share  AS delta FROM shares          WHERE consumer_id = :user
                 UNION ALL
-                SELECT payee_id    AS other_id,  amount AS delta FROM payments WHERE payer_id    = ?
+                SELECT payee_id    AS other_id,  amount AS delta FROM wallet_payments WHERE payer_id    = :user
                 UNION ALL
-                SELECT payer_id    AS other_id, -amount AS delta FROM payments WHERE payee_id    = ?
+                SELECT payer_id    AS other_id, -amount AS delta FROM wallet_payments WHERE payee_id    = :user
             ) d
             JOIN users u ON u.user_id = d.other_id
             GROUP BY d.other_id
             HAVING ROUND(net) != 0
             """,
-            (user_id, user_id, user_id, user_id),
+            {"user": user_id, "wallet": wallet_id},
         ).fetchall()

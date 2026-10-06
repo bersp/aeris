@@ -76,13 +76,34 @@ def authenticated(handler):
     return wrapper
 
 
+def wallet_of(request, user_id):
+    # The wallet a request asks about, or the user's active one when it names
+    # none. Every figure the API serves belongs to a single wallet. A page left
+    # open on a wallet that has since been removed gets a 404 rather than a
+    # crash.
+    wallet_id = request.query.get("wallet")
+    if not wallet_id:
+        return db.active_wallet(user_id)
+    try:
+        wallet = db.get_wallet(int(wallet_id))
+    except ValueError:
+        wallet = None
+    if wallet is None:
+        raise web.HTTPNotFound(
+            text=json.dumps({"error": "no such wallet"}), content_type="application/json"
+        )
+    return wallet
+
+
 @authenticated
 async def meta(request, user_id):
-    # What the page needs before it can ask for anything: who is looking, the
-    # range of days worth offering, and what is still coming. Scheduled expenses
-    # are due in the future, so they belong to no window in particular and ride
-    # here rather than in a dated range.
+    # What the page needs before it can ask for anything: who is looking, which
+    # wallet it is looking at and which others there are, the range of days worth
+    # offering, and what is still coming. Scheduled expenses are due in the
+    # future, so they belong to no window in particular and ride here rather than
+    # in a dated range.
     me = db.get_name(user_id)
+    wallet = wallet_of(request, user_id)
     scheduled = [
         {
             "id": item["id"],
@@ -102,12 +123,14 @@ async def meta(request, user_id):
                 f"{item['plan_index']}/{item['plan_total']}" if item["plan_id"] else None
             ),
         }
-        for item in db.list_scheduled(user_id)
+        for item in db.list_scheduled(user_id, wallet["id"])
     ]
     return web.json_response(
         {
             "me": me,
-            "first": db.first_operation_date(user_id),
+            "wallet": dict(wallet),
+            "wallets": [dict(w) for w in db.all_wallets()],
+            "first": db.first_operation_date(user_id, wallet["id"]),
             "today": datetime.now().date().isoformat(),
             "scheduled": scheduled,
         }
@@ -116,8 +139,8 @@ async def meta(request, user_id):
 
 @authenticated
 async def operations(request, user_id):
-    # Every operation the user takes part in between two days, both inclusive,
-    # newest first.
+    # Every operation of a wallet the user takes part in between two days, both
+    # inclusive, newest first.
     try:
         since = datetime.strptime(request.query["from"], "%Y-%m-%d")
         until = datetime.strptime(request.query["to"], "%Y-%m-%d") + timedelta(days=1)
@@ -134,8 +157,11 @@ async def operations(request, user_id):
             groups[product] = row["name"]
 
     me = db.get_name(user_id)
+    wallet = wallet_of(request, user_id)
     dated = []
-    for op in db.recent_operations(user_id, limit=None, since=since, until=until):
+    for op in db.recent_operations(
+        user_id, wallet["id"], limit=None, since=since, until=until
+    ):
         if op["kind"] == "payment":
             item = {
                 "kind": "payment",
@@ -162,7 +188,9 @@ async def operations(request, user_id):
             }
         dated.append((op["created_at"], item))
 
-    for inc in db.recent_incomes(user_id, limit=None, since=since, until=until):
+    for inc in db.recent_incomes(
+        user_id, wallet["id"], limit=None, since=since, until=until
+    ):
         dated.append(
             (
                 inc["created_at"],
@@ -191,20 +219,22 @@ async def operations(request, user_id):
 
 @authenticated
 async def chart(request, user_id):
-    # The cumulative daily spending the chart page draws: one series per month,
-    # most recent first, plus the current month's income for its reference line.
+    # The cumulative daily spending in a wallet the chart page draws: one series
+    # per month, most recent first, plus the current month's income for its
+    # reference line.
     try:
         months = min(max(int(request.query.get("months", 2)), 2), MAX_CHART_MONTHS)
     except ValueError:
         return web.json_response({"error": "months must be a number"}, status=400)
 
+    wallet = wallet_of(request, user_id)
     today = datetime.now().date()
     series = []
     for index in range(months):
         start, end = db.months_ago(index + 1), db.months_ago(index)
         totals = {
             row["day"]: row["total"]
-            for row in db.daily_expense_totals(user_id, start, end)
+            for row in db.daily_expense_totals(user_id, wallet["id"], start, end)
         }
         # The current month stops at today; past months run to their last day.
         last = today if index == 0 else (end.date() - timedelta(days=1))
@@ -221,11 +251,19 @@ async def chart(request, user_id):
 
     income = sum(
         row["total"]
-        for row in db.income_summary(user_id, db.months_ago(1), db.months_ago(0))
+        for row in db.income_summary(
+            user_id, wallet["id"], db.months_ago(1), db.months_ago(0)
+        )
     )
+    # The wallet goes in the title once there are several, since the lines
+    # alone do not say which money they count.
+    title = db.months_ago(1).strftime("%B %Y")
+    if len(db.all_wallets()) > 1:
+        title += f" · {wallet['name']}"
     return web.json_response(
         {
-            "title": db.months_ago(1).strftime("%B %Y"),
+            "title": title,
+            "symbol": wallet["symbol"],
             "series": series,
             "income": round(income / 100, 2),
         }

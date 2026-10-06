@@ -59,12 +59,12 @@ It only reaches what you logged yourself. An expense someone else recorded is th
 Nothing is deleted right away: the bot shows the operation it matched and waits for you to confirm. A short suffix can match several entries, in which case it offers the most recent one, so check the reply before confirming and pass more characters to reach an older one.
 
 ```
-/modify <id suffix> [date] <product[(note)]> [price] [payer] [beneficiaries]
+/modify <id suffix> [date] [product[(note)]] [price] [payer] [beneficiaries]
 ```
 
 Rewrite an entry, also `/mod`. After the id, type it the way you would type a new expense, or a new income when that is what you are changing: `/mod fk super(the note I forgot)`. Names go through aliases and typo collapsing exactly as they do when adding.
 
-Everything you leave out keeps the value it has, so that example touches only the note. Since the price comes after the product, changing it means restating the product too: `/mod fk super 7500`. An empty `()` deletes a note. Dating an entry into the future turns it into a scheduled expense, and dating one back records it now.
+Everything you leave out keeps the value it has, so that example touches only the note. Since the price comes after the product, changing it means restating the product too: `/mod fk super 7500`. An empty `()` deletes a note. Dating an entry into the future turns it into a scheduled expense, and dating one back records it now. A wallet moves it to another wallet: `/mod fk @usd`.
 
 It shows you the entry before and after and waits for you to confirm, like `/remove`, and like `/remove` it only reaches entries you logged yourself. The id keeps its last two letters, so the suffix you type still works afterwards.
 
@@ -121,6 +121,38 @@ Your income per month with a total; takes a month count like `/balance`.
 ```
 
 Your incomes, fully detailed. Short: `/dincomes`.
+
+## Wallets
+
+A wallet is a separate set of books, say one for pesos and one for dollars. Each has its own expenses, incomes, payments, debts and cash, and nothing is ever converted or added up across them. Everyone shares the same wallets, so when Alice pays a pizza in dollars, Bob owes her dollars. Products, aliases and groups are shared by all of them.
+
+Everything starts in `ars`. Add `@` and a wallet's name to a command, usually at the end, to use another one for that entry: `coffee 5 @usd`, `/inc salary 3000 @usd`, `/pay Bob 20 @usd`. The same works for the reports: `/balance @usd`, `/list m 3 @usd`. Every entry you log, change or remove is shown with its wallet's symbol, so you can tell at once which wallet it went to.
+
+```
+/wallet new <name> <symbol>
+```
+
+Create a wallet: `/wallet new usd US$`.
+
+```
+/wallet <name>
+```
+
+Make a wallet your active one, handy while travelling: `/wallet usd` and everything you log goes to `usd` until you switch back with `/wallet ars`. An `@` on a single entry still wins. It only changes your own default, not anyone else's.
+
+```
+/wallet rm <name>
+```
+
+Delete a wallet and everything in it, for everyone: `/wallet rm usd`. Nothing is deleted right away: Aeris tells you how many expenses, incomes, payments and scheduled expenses the wallet holds and waits for you to confirm. Everyone else is told once it is gone, and whoever had it active is moved back to `ars`, which is the one wallet that cannot be removed.
+
+```
+/wallets
+```
+
+Every wallet with your cash in it, before and after debts. The active one is marked with a •. `/wallet` on its own shows the same.
+
+With more than one wallet, `/balance`, `/list`, `/dlist`, `/incomes`, `/dincomes` and `/scheduled` show a button per wallet underneath: the one marked with a • is the wallet the report is about, and tapping another shows the same report for it in place. The chart follows the wallet of the report it was opened from, and `/ui` has the same choice at the top of the page.
 
 ## Aliases and products
 

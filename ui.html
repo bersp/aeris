@@ -71,6 +71,11 @@
     }
     .chip.on { background: var(--accent); color: var(--on-accent); }
 
+    /* The wallet picker heads the page, since everything under it belongs to
+       the wallet it has selected. It only shows when there is more than one. */
+    .wallets { padding: 0 16px 10px; }
+    .wallets[hidden] { display: none; }
+
     /* Five types will not fit across a narrow phone, so this row scrolls like
        the month one rather than squeezing the labels. */
     .seg { padding-top: 4px; }
@@ -162,6 +167,7 @@
 </head>
 <body>
   <header>
+    <div class="chips wallets" id="wallets" hidden></div>
     <div class="pad">
       <div class="period" id="period">Loading</div>
       <div class="total" id="total">&nbsp;</div>
@@ -219,17 +225,17 @@
 
     const API = location.origin + "/api/";
     const cache = new Map();
-    const state = { meta: null, from: null, to: null, label: "", ops: [],
-                    type: "all", query: "", open: null };
+    const state = { meta: null, wallet: null, symbol: "$", from: null, to: null,
+                    label: "", ops: [], type: "all", query: "", open: null };
 
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     // Product names are typed as one token, with underscores standing in for the
     // spaces they are shown with.
     const pretty = (s) => String(s || "").replace(/_/g, " ");
-    // Amounts are integer cents everywhere in Aeris; grouping matters here
-    // because the numbers run large.
-    const money = (cents) => "$" + (cents / 100).toLocaleString(undefined,
+    // Amounts are integer cents everywhere in Aeris, shown with the symbol of
+    // the wallet on screen; grouping matters here because the numbers run large.
+    const money = (cents) => state.symbol + (cents / 100).toLocaleString(undefined,
       { minimumFractionDigits: 0, maximumFractionDigits: 2 });
     const asDate = (iso) => new Date(iso + "T00:00:00");
     const MONTH = { month: "short" };
@@ -245,22 +251,33 @@
 
     async function load(from, to, label) {
       state.from = from; state.to = to; state.label = label; state.open = null;
-      const key = from + "|" + to;
-      if (cache.has(key)) { state.ops = cache.get(key); render(); return; }
-      document.body.classList.add("busy");
-      log("Loading...");
-      try {
-        const data = await get("operations", { from, to });
-        cache.set(key, data.operations);
-        state.ops = data.operations;
-        log("");
-      } catch (err) {
-        state.ops = [];
-        log(err.message, true);
-      } finally {
+      const key = state.wallet + "|" + from + "|" + to;
+      // Served at once, so the page is not waiting on anything, even if an
+      // earlier request is still out (its answer is dropped below).
+      if (cache.has(key)) {
+        state.ops = cache.get(key);
         document.body.classList.remove("busy");
         render();
+        return;
       }
+      document.body.classList.add("busy");
+      log("Loading...");
+      let ops = [];
+      try {
+        const data = await get("operations", { from, to, wallet: state.wallet });
+        cache.set(key, data.operations);
+        ops = data.operations;
+        log("");
+      } catch (err) {
+        log(err.message, true);
+      }
+      // A slow answer for a period or wallet that is no longer selected must not
+      // replace the one on screen: it would show one wallet's operations under
+      // another's symbol.
+      if (key !== state.wallet + "|" + state.from + "|" + state.to) return;
+      state.ops = ops;
+      document.body.classList.remove("busy");
+      render();
     }
 
     // --- filters -----------------------------------------------------------
@@ -291,6 +308,13 @@
       String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 
     function buildChips() {
+      const wallets = document.getElementById("wallets");
+      wallets.innerHTML = "";
+      wallets.hidden = state.meta.wallets.length < 2;
+      state.meta.wallets.forEach((w) => wallets.appendChild(chip(w.name, () =>
+        openWallet(w.id).catch((err) => log(err.message, true)),
+        () => state.wallet === w.id)));
+
       const months = monthRanges();
       const host = document.getElementById("months");
       host.innerHTML = "";
@@ -348,8 +372,9 @@
       // Anything that is neither a whole month nor the full history came from the
       // date pickers, so the Range chip is what is active.
       if (host[months.length + 1]) host[months.length + 1].classList.toggle("on", !matched);
-      Array.from(document.getElementById("types").children).forEach((el) =>
-        el.classList.toggle("on", el._isOn && el._isOn()));
+      ["wallets", "types"].forEach((id) =>
+        Array.from(document.getElementById(id).children).forEach((el) =>
+          el.classList.toggle("on", el._isOn && el._isOn())));
     }
 
     function visible() {
@@ -565,23 +590,39 @@
         if (from && to && from <= to) load(from, to, from + " → " + to);
       }));
 
+    let opening = 0;
+    async function openWallet(wallet) {
+      // Everything on the page belongs to one wallet, so switching starts over
+      // with its own history, months and scheduled expenses. Without a wallet
+      // the API picks the user's active one. Only the latest tap counts, for
+      // the same reason load() drops answers that arrive too late.
+      const mine = ++opening;
+      const meta = await get("meta", wallet ? { wallet } : {});
+      if (mine !== opening) return;
+      state.meta = meta;
+      state.wallet = state.meta.wallet.id;
+      state.symbol = state.meta.wallet.symbol;
+      const bounds = document.querySelectorAll("#range input");
+      bounds.forEach((el) => {
+        el.min = state.meta.first || state.meta.today;
+        el.max = state.meta.today;
+      });
+      buildChips();
+      if (!state.meta.first) {
+        state.from = state.to = state.meta.today;
+        state.label = "This month";
+        state.ops = [];
+        document.body.classList.remove("busy");
+        render();
+        return;
+      }
+      const current = monthRanges()[0];
+      await load(current.from, current.to, current.title);
+    }
+
     (async function start() {
       try {
-        state.meta = await get("meta");
-        const bounds = document.querySelectorAll("#range input");
-        bounds.forEach((el) => {
-          el.min = state.meta.first || state.meta.today;
-          el.max = state.meta.today;
-        });
-        buildChips();
-        if (!state.meta.first) {
-          state.from = state.to = state.meta.today;
-          state.label = "This month";
-          render();
-          return;
-        }
-        const current = monthRanges()[0];
-        await load(current.from, current.to, current.title);
+        await openWallet(null);
       } catch (err) {
         log(err.message, true);
       }
