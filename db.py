@@ -1075,14 +1075,21 @@ def expense_summary(user_id, wallet_id, since=None, until=None):
     # ordered largest first. `since`/`until` bound the window (since inclusive,
     # until exclusive). Payments are not expenses, so they are excluded. Products
     # the user has put in a group collapse into a single row labelled with the
-    # group name; ungrouped products keep their own row.
+    # group name; ungrouped products keep their own row. Groups match by product
+    # name ignoring case, since a shared expense may point at another user's
+    # product with the same name.
     query = """
         SELECT COALESCE(g.name, p.name) AS product,
                SUM(e.price * 1.0 / counts.n) AS total
         FROM expenses e
         JOIN products p ON p.id = e.product_id
-        LEFT JOIN product_groups g
-            ON g.product_id = e.product_id AND g.user_id = ?
+        LEFT JOIN (
+            SELECT LOWER(gp.name) AS product_name, MIN(pg.name) AS name
+            FROM product_groups pg
+            JOIN products gp ON gp.id = pg.product_id
+            WHERE pg.user_id = ?
+            GROUP BY LOWER(gp.name)
+        ) g ON g.product_name = LOWER(p.name)
         JOIN consumers c ON c.expense_seq = e.seq
         JOIN (
             SELECT expense_seq, COUNT(*) AS n FROM consumers GROUP BY expense_seq
